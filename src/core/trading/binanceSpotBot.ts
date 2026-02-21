@@ -1,0 +1,565 @@
+﻿import { logger } from "../../infra/logger.js";
+import type { ExchangeAdapter } from "../interfaces.js";
+import type { PlaceOrderRequest } from "../domain/types.js";
+import { SignalEngine } from "../signal/signalEngine.js";
+import { PortfolioAllocator } from "../portfolio/portfolioAllocator.js";
+import { InventoryManager, type Holdings } from "../inventory/inventoryManager.js";
+import { RiskEngine } from "../risk/riskEngine.js";
+import { ExecutionEngine } from "../execution/executionEngine.js";
+
+export type SupportedSymbol = "BTC/USDT" | "ETH/USDT";
+
+interface BotConfig {
+  symbols: SupportedSymbol[];
+  timeframes: [string, string];
+  feeBps: number;
+  slippageBps: number;
+  paperSpreadBps: number;
+  minHoldMinutes: number;
+  minEntryScore: number;
+  minEdgeMultiplier: number;
+  entryOrderType: "market" | "limit";
+  entryLimitOffsetBps: number;
+  entryLimitTimeoutMs: number;
+  exitOrderType: "market" | "limit";
+  liveTrading: boolean;
+}
+
+export interface BotReport {
+  finalUsdt: number;
+  maxDrawdownPct: number;
+  cagrApprox: number;
+  sharpeApprox: number;
+  profitFactor: number | null;
+  winRate: number;
+  feesPaidUsdt: number;
+  timeInPositionPct: number;
+  timeInUsdtPct: number;
+  tradesBySymbol: Record<SupportedSymbol, number>;
+  totalTrades: number;
+}
+
+interface RuntimeState {
+  startedAtMs: number;
+  lastCycleMs: number;
+  currentDayKey: string;
+  dayStartEquityUsdt: number;
+  peakEquityUsdt: number;
+  maxDrawdownPct: number;
+  tradesToday: number;
+  totalTrades: number;
+  lastTradeTs: Partial<Record<SupportedSymbol, number>>;
+  positionEntryTs: Partial<Record<SupportedSymbol, number>>;
+  tradesBySymbol: Record<SupportedSymbol, number>;
+  feesPaidUsdt: number;
+  equityHistory: number[];
+  returnsHistory: number[];
+  positivePnl: number;
+  negativePnlAbs: number;
+  winningSteps: number;
+  losingSteps: number;
+  timeInPositionMs: number;
+  timeInUsdtMs: number;
+  lastEquityUsdt: number;
+}
+
+interface QuoteSnapshot {
+  last: number;
+  bid: number;
+  ask: number;
+}
+
+type SignalSummary = {
+  action: "enter" | "exit" | "hold";
+  cooldownActive: boolean;
+  score: number;
+  features: { atrPct: number; trendRegime: "bullish" | "bearish" | "neutral"; momentumScore: number };
+};
+
+interface EntryGate {
+  allowed: boolean;
+  passScore: boolean;
+  passEdge: boolean;
+  score: number;
+  minScore: number;
+  atrPct: number;
+  requiredEdgePct: number;
+}
+
+function toHoldings(balances: Record<string, number>): Holdings {
+  return {
+    USDT: balances.USDT ?? 0,
+    BTC: balances.BTC ?? 0,
+    ETH: balances.ETH ?? 0
+  };
+}
+
+export class BinanceSpotBot {
+  private readonly execution: ExecutionEngine;
+  private readonly state: RuntimeState;
+
+  constructor(
+    private readonly adapter: ExchangeAdapter,
+    private readonly signalEngine: SignalEngine,
+    private readonly allocator: PortfolioAllocator,
+    private readonly inventory: InventoryManager,
+    private readonly riskEngine: RiskEngine,
+    private readonly cfg: BotConfig
+  ) {
+    this.execution = new ExecutionEngine(adapter);
+    const now = Date.now();
+    this.state = {
+      startedAtMs: now,
+      lastCycleMs: now,
+      currentDayKey: this.dayKey(now),
+      dayStartEquityUsdt: 0,
+      peakEquityUsdt: 0,
+      maxDrawdownPct: 0,
+      tradesToday: 0,
+      totalTrades: 0,
+      lastTradeTs: {},
+      positionEntryTs: {},
+      tradesBySymbol: { "BTC/USDT": 0, "ETH/USDT": 0 },
+      feesPaidUsdt: 0,
+      equityHistory: [],
+      returnsHistory: [],
+      positivePnl: 0,
+      negativePnlAbs: 0,
+      winningSteps: 0,
+      losingSteps: 0,
+      timeInPositionMs: 0,
+      timeInUsdtMs: 0,
+      lastEquityUsdt: 0
+    };
+  }
+
+  async runCycle(): Promise<void> {
+    const now = Date.now();
+    const [tfFast, tfSlow] = this.cfg.timeframes;
+
+    const quotesBefore = await this.fetchQuotes();
+    const lastPricesBefore = this.toLastPriceMap(quotesBefore);
+    const balancesBefore = await this.adapter.getBalances();
+    const holdingsBefore = toHoldings(balancesBefore);
+    const equityBefore = this.calculateEquityUsdt(holdingsBefore, quotesBefore);
+
+    if (this.state.dayStartEquityUsdt === 0) {
+      this.state.dayStartEquityUsdt = equityBefore;
+      this.state.peakEquityUsdt = equityBefore;
+      this.state.lastEquityUsdt = equityBefore;
+      this.state.equityHistory.push(equityBefore);
+    }
+    this.rollDailyIfNeeded(now, equityBefore);
+
+    const dt = Math.max(0, now - this.state.lastCycleMs);
+    const exposureBefore =
+      holdingsBefore.BTC * this.bidOrLast(quotesBefore["BTC/USDT"]) +
+      holdingsBefore.ETH * this.bidOrLast(quotesBefore["ETH/USDT"]);
+    const inPosition = exposureBefore >= 10;
+    if (inPosition) this.state.timeInPositionMs += dt;
+    else this.state.timeInUsdtMs += dt;
+    this.state.lastCycleMs = now;
+
+    const histories = await Promise.all(
+      this.cfg.symbols.flatMap((symbol) => [
+        this.adapter.getHistory(symbol, new Date(now - 7 * 24 * 60 * 60 * 1000), new Date(now), tfFast),
+        this.adapter.getHistory(symbol, new Date(now - 30 * 24 * 60 * 60 * 1000), new Date(now), tfSlow)
+      ])
+    );
+
+    const signals = {
+      "BTC/USDT": this.signalEngine.evaluate({
+        symbol: "BTC/USDT",
+        candles15m: histories[0] ?? [],
+        candles1h: histories[1] ?? [],
+        lastTradeTs: this.state.lastTradeTs["BTC/USDT"],
+        nowTs: now
+      }),
+      "ETH/USDT": this.signalEngine.evaluate({
+        symbol: "ETH/USDT",
+        candles15m: histories[2] ?? [],
+        candles1h: histories[3] ?? [],
+        lastTradeTs: this.state.lastTradeTs["ETH/USDT"],
+        nowTs: now
+      })
+    };
+
+    logger.info({ event: "signal_decisions", signals: { btc: signals["BTC/USDT"], eth: signals["ETH/USDT"] } });
+
+    const risk = this.riskEngine.evaluatePortfolio({
+      equityUsdt: equityBefore,
+      dayStartEquityUsdt: this.state.dayStartEquityUsdt,
+      peakEquityUsdt: this.state.peakEquityUsdt,
+      tradesToday: this.state.tradesToday,
+      atrPct: Math.max(signals["BTC/USDT"].features.atrPct, signals["ETH/USDT"].features.atrPct)
+    });
+
+    const currentWeights = this.currentWeights(holdingsBefore, quotesBefore, equityBefore);
+    const minHoldProtected = this.getMinHoldProtectedSymbols(now, currentWeights);
+    const exitSymbols = new Set<SupportedSymbol>();
+    const exitSuppressed: Array<{ symbol: SupportedSymbol; reason: string }> = [];
+
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      if (signals[symbol].action !== "exit") continue;
+      const strongExit =
+        signals[symbol].features.trendRegime === "bearish" || signals[symbol].features.momentumScore <= -0.45;
+      if (minHoldProtected.has(symbol) && !strongExit) {
+        exitSuppressed.push({ symbol, reason: "min_hold_active_without_strong_exit" });
+        continue;
+      }
+      exitSymbols.add(symbol);
+    }
+
+    let orders: Array<{
+      symbol: SupportedSymbol;
+      side: "buy" | "sell";
+      quantity: number;
+      type: "market" | "limit";
+      price?: number;
+      reason: string;
+    }> = [];
+
+    if (risk.forceLiquidate) {
+      logger.warn({ event: "risk_liquidation", reasons: risk.reasons });
+      orders = this.inventory.planLiquidation(holdingsBefore, lastPricesBefore);
+    } else if (risk.allowTrading) {
+      const cooldownProtected = this.getCooldownProtectedSymbols(signals, currentWeights);
+      const entrySuppressed: Array<{ symbol: SupportedSymbol; reason: string }> = [];
+      const entryGate: Record<SupportedSymbol, EntryGate> = {
+        "BTC/USDT": this.evaluateEntryGate(signals["BTC/USDT"]),
+        "ETH/USDT": this.evaluateEntryGate(signals["ETH/USDT"])
+      };
+
+      const allocation = this.allocator.allocate({
+        scores: {
+          "BTC/USDT":
+            signals["BTC/USDT"].action === "enter" &&
+            entryGate["BTC/USDT"].allowed
+              ? signals["BTC/USDT"].score
+              : cooldownProtected.has("BTC/USDT")
+                ? currentWeights["BTC/USDT"]
+                : 0,
+          "ETH/USDT":
+            signals["ETH/USDT"].action === "enter" &&
+            entryGate["ETH/USDT"].allowed
+              ? signals["ETH/USDT"].score
+              : cooldownProtected.has("ETH/USDT")
+                ? currentWeights["ETH/USDT"]
+                : 0
+        },
+        currentWeights
+      });
+
+      for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+        if (signals[symbol].action !== "enter") continue;
+        if (!entryGate[symbol].allowed) {
+          const reason = !entryGate[symbol].passScore
+            ? "insufficient_score"
+            : !entryGate[symbol].passEdge
+              ? "insufficient_edge"
+              : "entry_not_allowed";
+          entrySuppressed.push({ symbol, reason });
+        }
+      }
+
+      const adjustedTarget = this.applyCooldownProtection(allocation.weights, currentWeights, cooldownProtected);
+      const shouldRebalance = this.allocator.shouldRebalance(currentWeights, adjustedTarget);
+
+      logger.info({
+        event: "allocation_decision",
+        allocation,
+        adjustedTarget,
+        currentWeights,
+        cooldownProtected: Array.from(cooldownProtected.values()),
+        minHoldProtected: Array.from(minHoldProtected.values()),
+        entrySuppressed,
+        entryGate,
+        exitSuppressed
+      });
+
+      if (shouldRebalance || exitSymbols.size > 0) {
+        orders = this.inventory.planRebalance({
+          holdings: holdingsBefore,
+          prices: lastPricesBefore,
+          equityUsdt: equityBefore,
+          targetWeights: adjustedTarget,
+          exitSymbols,
+          preferMarketForExit: this.cfg.exitOrderType === "market"
+        });
+      }
+    } else {
+      logger.warn({ event: "risk_block", reasons: risk.reasons });
+    }
+
+    for (const planned of orders) {
+      const lastPrice = lastPricesBefore[planned.symbol] ?? 0;
+      const orderReq: PlaceOrderRequest = {
+        symbol: planned.symbol,
+        side: planned.side,
+        type: planned.type,
+        price: planned.price,
+        quantity: Number(planned.quantity.toFixed(6)),
+        clientOrderId: `${planned.symbol.replace("/", "")}-${planned.side}-${now}-${Math.floor(Math.random() * 1000)}`
+      };
+
+      let result;
+      if (planned.side === "buy" && this.cfg.entryOrderType === "limit") {
+        result = await this.execution.executeEntryWithFallback(
+          { ...orderReq, type: "limit", price: lastPrice * (1 + this.cfg.entryLimitOffsetBps / 10_000) },
+          { timeoutMs: this.cfg.entryLimitTimeoutMs, fallbackToMarket: true }
+        );
+      } else {
+        result = await this.execution.execute({
+          ...orderReq,
+          type: planned.type,
+          price: planned.type === "market" ? undefined : orderReq.price
+        });
+      }
+
+      const fillPrice = result.price ?? lastPrice;
+      const tradedNotional = fillPrice * Math.max(result.filledQuantity, result.quantity);
+      const fee = tradedNotional * (this.cfg.feeBps / 10_000);
+      this.state.feesPaidUsdt += fee;
+      this.state.totalTrades += 1;
+      this.state.tradesToday += 1;
+      this.state.tradesBySymbol[planned.symbol] += 1;
+      this.state.lastTradeTs[planned.symbol] = now;
+      if (planned.side === "buy" && result.filledQuantity > 0 && !this.state.positionEntryTs[planned.symbol]) {
+        this.state.positionEntryTs[planned.symbol] = now;
+      }
+
+      logger.info({ event: "order_executed", planned, result, fee });
+    }
+
+    const quotesAfter = await this.fetchQuotes();
+    const lastPricesAfter = this.toLastPriceMap(quotesAfter);
+    const balancesAfter = await this.adapter.getBalances();
+    const holdingsAfter = toHoldings(balancesAfter);
+    const equityAfter = this.calculateEquityUsdt(holdingsAfter, quotesAfter);
+    this.cleanupPositionEntryTs(holdingsAfter, quotesAfter);
+
+    this.updatePerformance(equityAfter);
+
+    logger.info({
+      event: "cycle_state",
+      balances: {
+        usdtFree: holdingsAfter.USDT,
+        btcFree: holdingsAfter.BTC,
+        ethFree: holdingsAfter.ETH
+      },
+      prices: lastPricesAfter,
+      equityUsdt: equityAfter,
+      feesPaidUsdt: this.state.feesPaidUsdt
+    });
+  }
+
+  getReport(): BotReport {
+    const end = Date.now();
+    const elapsedDays = Math.max(1 / 1440, (end - this.state.startedAtMs) / (1000 * 60 * 60 * 24));
+    const start = this.state.equityHistory[0] ?? 0;
+    const endEquity = this.state.equityHistory[this.state.equityHistory.length - 1] ?? start;
+
+    const enoughSamples = this.state.returnsHistory.length >= 50;
+    const enoughHorizon = elapsedDays >= 7;
+    const cagrApprox =
+      enoughSamples && enoughHorizon && start > 0
+        ? (Math.pow(endEquity / start, 365 / elapsedDays) - 1) * 100
+        : 0;
+
+    const mean =
+      this.state.returnsHistory.reduce((sum, r) => sum + r, 0) /
+      Math.max(1, this.state.returnsHistory.length);
+    const variance =
+      this.state.returnsHistory.reduce((sum, r) => sum + (r - mean) ** 2, 0) /
+      Math.max(1, this.state.returnsHistory.length);
+    const stdev = Math.sqrt(variance);
+    const sharpeApprox = enoughSamples && enoughHorizon && stdev !== 0 ? (mean / stdev) * Math.sqrt(365) : 0;
+
+    const totalSteps = this.state.winningSteps + this.state.losingSteps;
+    const winRate = totalSteps > 0 ? (this.state.winningSteps / totalSteps) * 100 : 0;
+    const profitFactor = this.state.negativePnlAbs <= 1e-9 ? null : this.state.positivePnl / this.state.negativePnlAbs;
+
+    const rawTime = this.state.timeInPositionMs + this.state.timeInUsdtMs;
+    const totalTime = Math.max(1, rawTime);
+    const timeInPositionPct = rawTime === 0 ? 0 : (this.state.timeInPositionMs / totalTime) * 100;
+    const timeInUsdtPct = rawTime === 0 ? 100 : (this.state.timeInUsdtMs / totalTime) * 100;
+
+    return {
+      finalUsdt: endEquity,
+      maxDrawdownPct: this.state.maxDrawdownPct,
+      cagrApprox,
+      sharpeApprox,
+      profitFactor,
+      winRate,
+      feesPaidUsdt: this.state.feesPaidUsdt,
+      timeInPositionPct,
+      timeInUsdtPct,
+      tradesBySymbol: { ...this.state.tradesBySymbol },
+      totalTrades: this.state.totalTrades
+    };
+  }
+
+  private async fetchQuotes(): Promise<Record<SupportedSymbol, QuoteSnapshot>> {
+    const quotes = await Promise.all(this.cfg.symbols.map((s) => this.adapter.getQuote(s)));
+    return {
+      "BTC/USDT": {
+        last: quotes.find((q) => q.symbol === "BTC/USDT")?.last ?? 0,
+        bid: quotes.find((q) => q.symbol === "BTC/USDT")?.bid ?? 0,
+        ask: quotes.find((q) => q.symbol === "BTC/USDT")?.ask ?? 0
+      },
+      "ETH/USDT": {
+        last: quotes.find((q) => q.symbol === "ETH/USDT")?.last ?? 0,
+        bid: quotes.find((q) => q.symbol === "ETH/USDT")?.bid ?? 0,
+        ask: quotes.find((q) => q.symbol === "ETH/USDT")?.ask ?? 0
+      }
+    };
+  }
+
+  private toLastPriceMap(quotes: Record<SupportedSymbol, QuoteSnapshot>): Record<SupportedSymbol, number> {
+    return {
+      "BTC/USDT": quotes["BTC/USDT"].last,
+      "ETH/USDT": quotes["ETH/USDT"].last
+    };
+  }
+
+  private updatePerformance(equityUsdt: number): void {
+    const pnlDelta = equityUsdt - this.state.lastEquityUsdt;
+    if (pnlDelta > 0) {
+      this.state.positivePnl += pnlDelta;
+      this.state.winningSteps += 1;
+    } else if (pnlDelta < 0) {
+      this.state.negativePnlAbs += Math.abs(pnlDelta);
+      this.state.losingSteps += 1;
+    }
+
+    if (this.state.lastEquityUsdt > 0) {
+      this.state.returnsHistory.push((equityUsdt - this.state.lastEquityUsdt) / this.state.lastEquityUsdt);
+    }
+    this.state.lastEquityUsdt = equityUsdt;
+    this.state.equityHistory.push(equityUsdt);
+
+    this.state.peakEquityUsdt = Math.max(this.state.peakEquityUsdt, equityUsdt);
+    const dd =
+      this.state.peakEquityUsdt > 0
+        ? ((this.state.peakEquityUsdt - equityUsdt) / this.state.peakEquityUsdt) * 100
+        : 0;
+    this.state.maxDrawdownPct = Math.max(this.state.maxDrawdownPct, dd);
+  }
+
+  private calculateEquityUsdt(holdings: Holdings, quotes: Record<SupportedSymbol, QuoteSnapshot>): number {
+    const btcLiquidation = this.bidOrLast(quotes["BTC/USDT"]);
+    const ethLiquidation = this.bidOrLast(quotes["ETH/USDT"]);
+    return holdings.USDT + holdings.BTC * btcLiquidation + holdings.ETH * ethLiquidation;
+  }
+
+  private currentWeights(
+    holdings: Holdings,
+    quotes: Record<SupportedSymbol, QuoteSnapshot>,
+    equityUsdt: number
+  ): Record<SupportedSymbol | "USDT", number> {
+    if (equityUsdt <= 0) {
+      return { "BTC/USDT": 0, "ETH/USDT": 0, USDT: 1 };
+    }
+
+    const btcW = (holdings.BTC * this.bidOrLast(quotes["BTC/USDT"])) / equityUsdt;
+    const ethW = (holdings.ETH * this.bidOrLast(quotes["ETH/USDT"])) / equityUsdt;
+    const usdtW = holdings.USDT / equityUsdt;
+    return { "BTC/USDT": btcW, "ETH/USDT": ethW, USDT: usdtW };
+  }
+
+  private bidOrLast(quote: QuoteSnapshot): number {
+    return quote.bid > 0 ? quote.bid : quote.last;
+  }
+
+  private getCooldownProtectedSymbols(
+    signals: Record<SupportedSymbol, SignalSummary>,
+    currentWeights: Record<SupportedSymbol | "USDT", number>
+  ): Set<SupportedSymbol> {
+    const out = new Set<SupportedSymbol>();
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      if (signals[symbol].action === "hold" && signals[symbol].cooldownActive && currentWeights[symbol] > 0.01) {
+        out.add(symbol);
+      }
+    }
+    return out;
+  }
+
+  private getMinHoldProtectedSymbols(
+    nowTs: number,
+    currentWeights: Record<SupportedSymbol | "USDT", number>
+  ): Set<SupportedSymbol> {
+    const out = new Set<SupportedSymbol>();
+    const minHoldMs = this.cfg.minHoldMinutes * 60_000;
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      const entryTs = this.state.positionEntryTs[symbol];
+      if (!entryTs) continue;
+      if (currentWeights[symbol] <= 0.01) continue;
+      if (nowTs - entryTs < minHoldMs) out.add(symbol);
+    }
+    return out;
+  }
+
+  private evaluateEntryGate(signal: SignalSummary): EntryGate {
+    const passScore = signal.score >= this.cfg.minEntryScore;
+    const roundTripCostPct = (2 * this.cfg.feeBps + this.cfg.paperSpreadBps) / 100;
+    const requiredEdgePct = roundTripCostPct * this.cfg.minEdgeMultiplier;
+    const passEdge = signal.features.atrPct >= requiredEdgePct;
+    return {
+      allowed: signal.action === "enter" && passScore && passEdge,
+      passScore,
+      passEdge,
+      score: signal.score,
+      minScore: this.cfg.minEntryScore,
+      atrPct: signal.features.atrPct,
+      requiredEdgePct
+    };
+  }
+
+  private cleanupPositionEntryTs(
+    holdings: Holdings,
+    quotes: Record<SupportedSymbol, QuoteSnapshot>
+  ): void {
+    const exposureBtc = holdings.BTC * this.bidOrLast(quotes["BTC/USDT"]);
+    const exposureEth = holdings.ETH * this.bidOrLast(quotes["ETH/USDT"]);
+    if (exposureBtc < 10) delete this.state.positionEntryTs["BTC/USDT"];
+    if (exposureEth < 10) delete this.state.positionEntryTs["ETH/USDT"];
+  }
+
+  private rollDailyIfNeeded(nowTs: number, equityUsdt: number): void {
+    const key = this.dayKey(nowTs);
+    if (key === this.state.currentDayKey) return;
+    this.state.currentDayKey = key;
+    this.state.tradesToday = 0;
+    this.state.dayStartEquityUsdt = equityUsdt;
+    logger.info({ event: "daily_rollover", dayKey: key, dayStartEquityUsdt: equityUsdt });
+  }
+
+  private dayKey(ts: number): string {
+    return new Date(ts).toISOString().slice(0, 10);
+  }
+
+  private applyCooldownProtection(
+    target: Record<SupportedSymbol | "USDT", number>,
+    current: Record<SupportedSymbol | "USDT", number>,
+    protectedSymbols: Set<SupportedSymbol>
+  ): Record<SupportedSymbol | "USDT", number> {
+    const out = { ...target };
+    for (const symbol of protectedSymbols) {
+      if (out[symbol] < current[symbol]) {
+        const diff = current[symbol] - out[symbol];
+        out[symbol] = current[symbol];
+        out.USDT = Math.max(0, out.USDT - diff);
+      }
+    }
+
+    const sum = out["BTC/USDT"] + out["ETH/USDT"] + out.USDT;
+    if (sum > 1) {
+      const overflow = sum - 1;
+      out.USDT = Math.max(0, out.USDT - overflow);
+    } else if (sum < 1) {
+      out.USDT += 1 - sum;
+    }
+
+    return out;
+  }
+}

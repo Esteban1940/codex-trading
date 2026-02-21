@@ -18,6 +18,7 @@ interface BotConfig {
   minHoldMinutes: number;
   minEntryScore: number;
   minEdgeMultiplier: number;
+  edgePctCap: number;
   entryOrderType: "market" | "limit";
   entryLimitOffsetBps: number;
   entryLimitTimeoutMs: number;
@@ -82,7 +83,10 @@ interface EntryGate {
   passEdge: boolean;
   score: number;
   minScore: number;
-  atrPct: number;
+  observedEdgePct: number;
+  edgeBufferPct: number;
+  roundTripCostPct: number;
+  rawRequiredEdgePct: number;
   requiredEdgePct: number;
 }
 
@@ -501,16 +505,23 @@ export class BinanceSpotBot {
 
   private evaluateEntryGate(signal: SignalSummary): EntryGate {
     const passScore = signal.score >= this.cfg.minEntryScore;
+    const observedEdgePct = signal.features.atrPct;
     const roundTripCostPct = (2 * this.cfg.feeBps + this.cfg.paperSpreadBps) / 100;
-    const requiredEdgePct = roundTripCostPct * this.cfg.minEdgeMultiplier;
-    const passEdge = signal.features.atrPct >= requiredEdgePct;
+    const rawRequiredEdgePct = roundTripCostPct * this.cfg.minEdgeMultiplier;
+    const requiredEdgePct =
+      this.cfg.edgePctCap > 0 ? Math.min(rawRequiredEdgePct, this.cfg.edgePctCap) : rawRequiredEdgePct;
+    const edgeBufferPct = observedEdgePct - requiredEdgePct;
+    const passEdge = edgeBufferPct >= 0;
     return {
       allowed: signal.action === "enter" && passScore && passEdge,
       passScore,
       passEdge,
       score: signal.score,
       minScore: this.cfg.minEntryScore,
-      atrPct: signal.features.atrPct,
+      observedEdgePct,
+      edgeBufferPct,
+      roundTripCostPct,
+      rawRequiredEdgePct,
       requiredEdgePct
     };
   }

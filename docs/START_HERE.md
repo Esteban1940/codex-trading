@@ -35,6 +35,30 @@ pnpm install
 pnpm dev:paper
 ```
 
+For a realistic local dry-run with a small account:
+
+```env
+PAPER_INITIAL_USDT=94
+MIN_NOTIONAL_USDT=10
+```
+
+Optional short-paper calibration (to force a few trades for validation only):
+
+```env
+SIGNAL_MIN_ENTRY_SCORE=0.20
+SIGNAL_MIN_EDGE_MULTIPLIER=1.2
+SIGNAL_EDGE_PCT_CAP=0.35
+ALLOCATOR_MIN_SCORE_TO_INVEST=0.10
+MIN_HOLD_MINUTES=30
+PAPER_SPREAD_BPS=10
+```
+
+Then run:
+
+```bash
+pnpm dev:paper --cycles 30 --interval-ms 3000
+```
+
 ## 5) Autonomous mode
 
 ```bash
@@ -71,3 +95,4 @@ pnpm dev:live --cycles 0 --interval-ms 60000
 - Scope is fixed to BTC/USDT and ETH/USDT.
 - No short selling in spot.
 - No performance guarantees.
+- Mainnet order placement is blocked unless `LIVE_TRADING=true`.

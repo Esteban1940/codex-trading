@@ -1,6 +1,7 @@
 ﻿import type { ExchangeAdapter } from "../../core/interfaces.js";
 import type { AccountSnapshot, Candle, Order, PlaceOrderRequest, Position, Quote } from "../../core/domain/types.js";
 import { withRetry } from "../../infra/retry.js";
+import { config } from "../../infra/config.js";
 import { createBinanceClient, validateBinanceKeySecurity, type BinanceExchange } from "./ccxtClient.js";
 
 interface BalancePayload {
@@ -47,6 +48,12 @@ function asOhlcvRows(value: unknown): OhlcvRow[] {
 export class BinanceAdapter implements ExchangeAdapter {
   private readonly exchange: BinanceExchange = createBinanceClient();
   private initialized = false;
+
+  private assertOrderPlacementAllowed(): void {
+    if (!config.BINANCE_TESTNET && !config.LIVE_TRADING) {
+      throw new Error("Order placement blocked: BINANCE_TESTNET=false requires LIVE_TRADING=true.");
+    }
+  }
 
   private async ensureInit(): Promise<void> {
     if (this.initialized) return;
@@ -98,6 +105,7 @@ export class BinanceAdapter implements ExchangeAdapter {
   }
 
   async placeOrder(request: PlaceOrderRequest): Promise<Order> {
+    this.assertOrderPlacementAllowed();
     await this.ensureInit();
     const response = asOrderPayload(
       await withRetry(() =>

@@ -1,4 +1,5 @@
-﻿import { z } from "zod";
+import "dotenv/config";
+import { z } from "zod";
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -38,11 +39,14 @@ const envSchema = z.object({
   SIGNAL_COOLDOWN_MINUTES: z.coerce.number().default(30),
   SIGNAL_MIN_ENTRY_SCORE: z.coerce.number().default(0.25),
   SIGNAL_MIN_EDGE_MULTIPLIER: z.coerce.number().default(2),
+  SIGNAL_EDGE_PCT_CAP: z.coerce.number().default(0),
   MIN_HOLD_MINUTES: z.coerce.number().default(45),
 
   DEFAULT_FEE_BPS: z.coerce.number().default(10),
   DEFAULT_SLIPPAGE_BPS: z.coerce.number().default(5),
   PAPER_SPREAD_BPS: z.coerce.number().default(6),
+  PAPER_INITIAL_USDT: z.coerce.number().default(10000),
+  MIN_NOTIONAL_USDT: z.coerce.number().default(10),
 
   EXEC_ENTRY_ORDER_TYPE: z.enum(["market", "limit"]).default("limit"),
   EXEC_ENTRY_LIMIT_OFFSET_BPS: z.coerce.number().default(5),

@@ -14,6 +14,7 @@ Base currency and performance target:
 - API key must have read + spot trading only.
 - Withdrawals must stay disabled.
 - Live mode is blocked unless `LIVE_TRADING=true`.
+- Mainnet order placement is blocked when `LIVE_TRADING=false`.
 
 ## Setup
 
@@ -27,6 +28,8 @@ Required env values:
 - `TIMEFRAMES=15m,1h`
 - `BINANCE_API_KEY`, `BINANCE_API_SECRET`
 - `BINANCE_TESTNET=true` for safe testing
+- `PAPER_INITIAL_USDT` to mirror your paper account size (example `94`)
+- `MIN_NOTIONAL_USDT` to enforce min order notional (default `10`)
 
 ## Commands
 
@@ -38,6 +41,11 @@ pnpm dev:paper
 Paper with Binance adapter:
 ```bash
 pnpm dev:paper --real-adapter --cycles 3 --interval-ms 60000
+```
+
+Paper with calibrated short-run:
+```bash
+pnpm dev:paper --cycles 30 --interval-ms 3000
 ```
 
 Autonomous loop worker:

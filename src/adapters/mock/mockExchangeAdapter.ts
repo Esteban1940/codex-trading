@@ -15,7 +15,7 @@ const SYMBOL_CONFIG: Record<"BTC/USDT" | "ETH/USDT", PriceState> = {
 };
 
 export class MockExchangeAdapter extends MockBrokerAdapter implements ExchangeAdapter {
-  private balances: Record<string, number> = { USDT: 10000, BTC: 0, ETH: 0 };
+  private balances: Record<string, number> = { USDT: config.PAPER_INITIAL_USDT, BTC: 0, ETH: 0 };
   private priceState: Record<"BTC/USDT" | "ETH/USDT", PriceState> = {
     "BTC/USDT": { ...SYMBOL_CONFIG["BTC/USDT"] },
     "ETH/USDT": { ...SYMBOL_CONFIG["ETH/USDT"] }

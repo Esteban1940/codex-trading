@@ -33,6 +33,24 @@ Decision outputs:
 
 The bot logs features and final reason every cycle.
 
+### Entry gate (friction-aware)
+
+An `enter` still needs to pass:
+- `score >= SIGNAL_MIN_ENTRY_SCORE`
+- `observedEdgePct >= requiredEdgePct`
+
+Where:
+- `observedEdgePct` is ATR% on the fast timeframe.
+- `requiredEdgePct` is derived from round-trip cost:
+  - `roundTripCostPct = (2 * feeBps + spreadBps) / 100`
+  - `requiredEdgePctRaw = roundTripCostPct * SIGNAL_MIN_EDGE_MULTIPLIER`
+  - optional cap: `requiredEdgePct = min(requiredEdgePctRaw, SIGNAL_EDGE_PCT_CAP)` if cap > 0
+
+Logs include:
+- `passScore`, `passEdge`
+- `observedEdgePct`, `requiredEdgePct`, `edgeBufferPct`
+- suppression reason: `insufficient_score` or `insufficient_edge`
+
 ## Returning to USDT (InventoryManager)
 
 Portfolio is handled as:

@@ -50,7 +50,7 @@ const bot = new BinanceSpotBot(
   }),
   new InventoryManager({
     feeBps: config.DEFAULT_FEE_BPS,
-    minNotionalUsdt: 10,
+    minNotionalUsdt: config.MIN_NOTIONAL_USDT,
     aggressiveLimitOffsetBps: config.EXEC_ENTRY_LIMIT_OFFSET_BPS
   }),
   new RiskEngine({
@@ -75,6 +75,7 @@ const bot = new BinanceSpotBot(
     minHoldMinutes: config.MIN_HOLD_MINUTES,
     minEntryScore: config.SIGNAL_MIN_ENTRY_SCORE,
     minEdgeMultiplier: config.SIGNAL_MIN_EDGE_MULTIPLIER,
+    edgePctCap: config.SIGNAL_EDGE_PCT_CAP,
     entryOrderType: config.EXEC_ENTRY_ORDER_TYPE,
     entryLimitOffsetBps: config.EXEC_ENTRY_LIMIT_OFFSET_BPS,
     entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
@@ -90,7 +91,16 @@ async function main(): Promise<void> {
     timeframes: config.TIMEFRAMES,
     intervalMs: config.WORKER_INTERVAL_MS,
     maxCycles: config.WORKER_MAX_CYCLES,
-    realAdapter: config.WORKER_REAL_ADAPTER
+    realAdapter: config.WORKER_REAL_ADAPTER,
+    feeBps: config.DEFAULT_FEE_BPS,
+    paperSpreadBps: config.PAPER_SPREAD_BPS,
+    signalMinEntryScore: config.SIGNAL_MIN_ENTRY_SCORE,
+    signalMinEdgeMultiplier: config.SIGNAL_MIN_EDGE_MULTIPLIER,
+    signalEdgePctCap: config.SIGNAL_EDGE_PCT_CAP,
+    allocatorMinScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST,
+    minHoldMinutes: config.MIN_HOLD_MINUTES,
+    minNotionalUsdt: config.MIN_NOTIONAL_USDT,
+    paperInitialUsdt: config.PAPER_INITIAL_USDT
   });
 
   let cycle = 0;

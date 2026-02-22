@@ -1,6 +1,7 @@
 ﻿import { Command } from "commander";
 import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
+import { assertConservativeLiveConfig } from "../infra/liveSafety.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
 import { MockExchangeAdapter } from "../adapters/mock/mockExchangeAdapter.js";
@@ -81,9 +82,9 @@ function buildRiskEngine(): RiskEngine {
     maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
     maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
     maxTradesPerDay: config.RISK_MAX_TRADES_PER_DAY,
-    maxOpenPositions: 5,
-    maxNotionalPerSymbolUsd: 1_000_000,
-    maxNotionalPerMarketUsd: 1_000_000,
+    maxOpenPositions: config.MAX_OPEN_POSITIONS,
+    maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
+    maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT
   });
 }
@@ -108,7 +109,8 @@ function buildBot(realAdapter: boolean): BinanceSpotBot {
     entryLimitOffsetBps: config.EXEC_ENTRY_LIMIT_OFFSET_BPS,
     entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
     exitOrderType: config.EXEC_EXIT_ORDER_TYPE,
-    liveTrading: config.LIVE_TRADING
+    liveTrading: config.LIVE_TRADING,
+    readOnlyMode: config.READ_ONLY_MODE
   });
 }
 
@@ -137,7 +139,15 @@ function logEffectiveRuntimeConfig(mode: "paper" | "live"): void {
     allocatorMinScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST,
     minHoldMinutes: config.MIN_HOLD_MINUTES,
     minNotionalUsdt: config.MIN_NOTIONAL_USDT,
-    paperInitialUsdt: config.PAPER_INITIAL_USDT
+    paperInitialUsdt: config.PAPER_INITIAL_USDT,
+    maxTradesPerDay: config.RISK_MAX_TRADES_PER_DAY,
+    maxDailyLossUsdt: config.RISK_MAX_DAILY_LOSS_USDT,
+    maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
+    maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
+    maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
+    maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
+    readOnlyMode: config.READ_ONLY_MODE,
+    liveRequireConservativeLimits: config.LIVE_REQUIRE_CONSERVATIVE_LIMITS
   });
 }
 
@@ -154,7 +164,7 @@ program
   .option("--interval-ms <number>", "Interval between cycles", String(config.WORKER_INTERVAL_MS))
   .option("--real-adapter", "Use Binance adapter (testnet/mainnet based on env)", false)
   .action(async (opts) => {
-    if (Boolean(opts.realAdapter) && !config.BINANCE_TESTNET && !config.LIVE_TRADING) {
+    if (Boolean(opts.realAdapter) && !config.BINANCE_TESTNET && !config.LIVE_TRADING && !config.READ_ONLY_MODE) {
       throw new Error("paper --real-adapter blocked on mainnet. Set LIVE_TRADING=true or enable BINANCE_TESTNET=true.");
     }
     logEffectiveRuntimeConfig("paper");
@@ -172,6 +182,7 @@ program
     if (!config.LIVE_TRADING) {
       throw new Error("LIVE mode blocked. Set LIVE_TRADING=true explicitly in .env.");
     }
+    assertConservativeLiveConfig(config);
 
     const bot = buildBot(true);
     await runLoop(bot, Number(opts.cycles), Number(opts.intervalMs));

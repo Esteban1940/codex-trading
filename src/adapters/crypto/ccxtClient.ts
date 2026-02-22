@@ -4,10 +4,42 @@ import { withRetry } from "../../infra/retry.js";
 
 export interface ApiRestrictions {
   enableWithdrawals?: boolean;
+  enableReading?: boolean;
+  enableSpotAndMarginTrading?: boolean;
+}
+
+export interface MarketFilter {
+  filterType?: string;
+  stepSize?: string;
+  tickSize?: string;
+  minQty?: string;
+  minPrice?: string;
+  maxPrice?: string;
+  minNotional?: string;
+  notional?: string;
+}
+
+export interface ExchangeMarket {
+  symbol?: string;
+  precision?: {
+    amount?: number;
+    price?: number;
+  };
+  limits?: {
+    amount?: { min?: number };
+    price?: { min?: number; max?: number };
+    cost?: { min?: number };
+  };
+  info?: {
+    filters?: MarketFilter[];
+  };
 }
 
 export interface BinanceExchange {
   loadMarkets(): Promise<unknown>;
+  market(symbol: string): ExchangeMarket;
+  amountToPrecision(symbol: string, amount: number): string;
+  priceToPrecision(symbol: string, price: number): string;
   fetchBalance(): Promise<unknown>;
   createOrder(
     symbol: string,
@@ -45,5 +77,11 @@ export async function validateBinanceKeySecurity(exchange: BinanceExchange): Pro
   const raw = await withRetry(() => exchange.sapiGetAccountApiRestrictions());
   if (raw?.enableWithdrawals === true) {
     throw new Error("Binance API key has withdrawals enabled. Disable it before continuing.");
+  }
+  if (raw?.enableReading === false) {
+    throw new Error("Binance API key does not allow reading account data.");
+  }
+  if (raw?.enableSpotAndMarginTrading === false) {
+    throw new Error("Binance API key does not allow Spot trading.");
   }
 }

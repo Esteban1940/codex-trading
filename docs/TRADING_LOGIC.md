@@ -17,6 +17,7 @@ Each cycle the bot:
 4. If risk breach and `LIQUIDATE_ON_RISK=true`, liquidates BTC/ETH to USDT.
 5. Otherwise allocates capital between BTC and ETH via score-based allocator.
 6. Rebalances inventory with spot-only buy/sell orders.
+7. If `READ_ONLY_MODE=true`, it logs planned orders but skips execution.
 
 ## SignalEngine
 
@@ -97,6 +98,8 @@ When violated:
 - Entry supports limit with timeout + fallback to market.
 - Exit/risk orders default to market (`EXEC_EXIT_ORDER_TYPE=market`).
 - Partial fill handling is supported via reconciliation/fallback path.
+- Pre-flight risk validation runs before each order (daily loss, drawdown, notional caps).
+- Binance order requests are normalized against venue filters (`LOT_SIZE`, `PRICE_FILTER`, `MIN_NOTIONAL`) before sending.
 
 ## Metrics and reports (paper/backtest)
 

@@ -1,6 +1,6 @@
 ﻿import { logger } from "../../infra/logger.js";
 import type { ExchangeAdapter } from "../interfaces.js";
-import type { PlaceOrderRequest } from "../domain/types.js";
+import type { PlaceOrderRequest, Position, RiskSnapshot } from "../domain/types.js";
 import { SignalEngine } from "../signal/signalEngine.js";
 import { PortfolioAllocator } from "../portfolio/portfolioAllocator.js";
 import { InventoryManager, type Holdings } from "../inventory/inventoryManager.js";
@@ -24,6 +24,7 @@ interface BotConfig {
   entryLimitTimeoutMs: number;
   exitOrderType: "market" | "limit";
   liveTrading: boolean;
+  readOnlyMode: boolean;
 }
 
 export interface BotReport {
@@ -163,6 +164,7 @@ export class BinanceSpotBot {
     if (inPosition) this.state.timeInPositionMs += dt;
     else this.state.timeInUsdtMs += dt;
     this.state.lastCycleMs = now;
+    this.bootstrapPositionEntryTimestamps(now, holdingsBefore, quotesBefore);
 
     const histories = await Promise.all(
       this.cfg.symbols.flatMap((symbol) => [
@@ -295,6 +297,18 @@ export class BinanceSpotBot {
       logger.warn({ event: "risk_block", reasons: risk.reasons });
     }
 
+    if (orders.length > 0 && this.cfg.readOnlyMode) {
+      logger.warn({
+        event: "read_only_orders_skipped",
+        reason: "READ_ONLY_MODE=true",
+        orders
+      });
+      orders = [];
+    }
+
+    let projectedExposureCrypto = exposureBefore;
+    const projectedPositions = this.toPositions(holdingsBefore);
+
     for (const planned of orders) {
       const lastPrice = lastPricesBefore[planned.symbol] ?? 0;
       const orderReq: PlaceOrderRequest = {
@@ -305,6 +319,31 @@ export class BinanceSpotBot {
         quantity: Number(planned.quantity.toFixed(6)),
         clientOrderId: `${planned.symbol.replace("/", "")}-${planned.side}-${now}-${Math.floor(Math.random() * 1000)}`
       };
+
+      const riskSnapshot: RiskSnapshot = {
+        dayLossUsd: Math.max(0, this.state.dayStartEquityUsdt - equityBefore),
+        drawdownPct:
+          this.state.peakEquityUsdt > 0
+            ? ((this.state.peakEquityUsdt - equityBefore) / this.state.peakEquityUsdt) * 100
+            : 0,
+        openPositions: projectedPositions.filter((p) => p.quantity > 0).length,
+        marketExposureUsd: {
+          iol: 0,
+          crypto: projectedExposureCrypto
+        }
+      };
+
+      try {
+        this.riskEngine.evaluateOrder(orderReq, lastPrice, projectedPositions, riskSnapshot);
+      } catch (error) {
+        logger.warn({
+          event: "order_blocked_risk_precheck",
+          planned,
+          reason: error instanceof Error ? error.message : String(error),
+          riskSnapshot
+        });
+        continue;
+      }
 
       let result;
       if (planned.side === "buy" && this.cfg.entryOrderType === "limit") {
@@ -331,6 +370,12 @@ export class BinanceSpotBot {
       if (planned.side === "buy" && result.filledQuantity > 0 && !this.state.positionEntryTs[planned.symbol]) {
         this.state.positionEntryTs[planned.symbol] = now;
       }
+
+      const filledNotional = fillPrice * Math.max(0, result.filledQuantity);
+      projectedExposureCrypto = Math.max(
+        0,
+        projectedExposureCrypto + (planned.side === "buy" ? filledNotional : -filledNotional)
+      );
 
       logger.info({ event: "order_executed", planned, result, fee });
     }
@@ -424,6 +469,29 @@ export class BinanceSpotBot {
       "BTC/USDT": quotes["BTC/USDT"].last,
       "ETH/USDT": quotes["ETH/USDT"].last
     };
+  }
+
+  private toPositions(holdings: Holdings): Position[] {
+    const positions: Position[] = [];
+    if (holdings.BTC > 0) {
+      positions.push({
+        symbol: "BTC/USDT",
+        quantity: holdings.BTC,
+        avgPrice: 0,
+        market: "crypto",
+        assetClass: "crypto"
+      });
+    }
+    if (holdings.ETH > 0) {
+      positions.push({
+        symbol: "ETH/USDT",
+        quantity: holdings.ETH,
+        avgPrice: 0,
+        market: "crypto",
+        assetClass: "crypto"
+      });
+    }
+    return positions;
   }
 
   private updatePerformance(equityUsdt: number): void {
@@ -534,6 +602,24 @@ export class BinanceSpotBot {
     const exposureEth = holdings.ETH * this.bidOrLast(quotes["ETH/USDT"]);
     if (exposureBtc < 10) delete this.state.positionEntryTs["BTC/USDT"];
     if (exposureEth < 10) delete this.state.positionEntryTs["ETH/USDT"];
+  }
+
+  private bootstrapPositionEntryTimestamps(
+    nowTs: number,
+    holdings: Holdings,
+    quotes: Record<SupportedSymbol, QuoteSnapshot>
+  ): void {
+    const exposureBtc = holdings.BTC * this.bidOrLast(quotes["BTC/USDT"]);
+    const exposureEth = holdings.ETH * this.bidOrLast(quotes["ETH/USDT"]);
+
+    if (exposureBtc >= 10 && !this.state.positionEntryTs["BTC/USDT"]) {
+      this.state.positionEntryTs["BTC/USDT"] = nowTs;
+      logger.info({ event: "position_bootstrap_from_holdings", symbol: "BTC/USDT", exposureUsdt: exposureBtc });
+    }
+    if (exposureEth >= 10 && !this.state.positionEntryTs["ETH/USDT"]) {
+      this.state.positionEntryTs["ETH/USDT"] = nowTs;
+      logger.info({ event: "position_bootstrap_from_holdings", symbol: "ETH/USDT", exposureUsdt: exposureEth });
+    }
   }
 
   private rollDailyIfNeeded(nowTs: number, equityUsdt: number): void {

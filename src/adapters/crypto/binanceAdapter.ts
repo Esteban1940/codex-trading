@@ -2,7 +2,14 @@
 import type { AccountSnapshot, Candle, Order, PlaceOrderRequest, Position, Quote } from "../../core/domain/types.js";
 import { withRetry } from "../../infra/retry.js";
 import { config } from "../../infra/config.js";
-import { createBinanceClient, validateBinanceKeySecurity, type BinanceExchange } from "./ccxtClient.js";
+import { logger } from "../../infra/logger.js";
+import {
+  createBinanceClient,
+  validateBinanceKeySecurity,
+  type BinanceExchange,
+  type ExchangeMarket,
+  type MarketFilter
+} from "./ccxtClient.js";
 
 interface BalancePayload {
   total?: Record<string, number | string | undefined>;
@@ -29,6 +36,20 @@ interface TickerPayload {
 
 type OhlcvRow = [number, number, number, number, number, number];
 
+interface VenueFilters {
+  minQty: number;
+  stepSize: number;
+  minPrice: number;
+  maxPrice: number;
+  tickSize: number;
+  minNotional: number;
+}
+
+interface NormalizedOrderRequest {
+  request: PlaceOrderRequest;
+  adjustments: string[];
+}
+
 function asBalancePayload(value: unknown): BalancePayload {
   return (value as BalancePayload) ?? {};
 }
@@ -43,6 +64,21 @@ function asTickerPayload(value: unknown): TickerPayload {
 
 function asOhlcvRows(value: unknown): OhlcvRow[] {
   return Array.isArray(value) ? (value as OhlcvRow[]) : [];
+}
+
+function toNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function roundDownToStep(value: number, step: number): number {
+  if (step <= 0) return value;
+  const units = Math.floor(value / step);
+  return units * step;
+}
+
+function findFilter(filters: MarketFilter[] | undefined, filterType: string): MarketFilter | undefined {
+  return filters?.find((f) => f.filterType === filterType);
 }
 
 export class BinanceAdapter implements ExchangeAdapter {
@@ -60,6 +96,111 @@ export class BinanceAdapter implements ExchangeAdapter {
     await withRetry(() => this.exchange.loadMarkets());
     await validateBinanceKeySecurity(this.exchange);
     this.initialized = true;
+  }
+
+  private getMarket(symbol: string): ExchangeMarket {
+    const market = this.exchange.market(symbol);
+    if (!market) throw new Error(`Market metadata not found for ${symbol}.`);
+    return market;
+  }
+
+  private getVenueFilters(symbol: string): VenueFilters {
+    const market = this.getMarket(symbol);
+    const filters = market.info?.filters;
+
+    const lotSize = findFilter(filters, "LOT_SIZE");
+    const priceFilter = findFilter(filters, "PRICE_FILTER");
+    const minNotionalFilter = findFilter(filters, "MIN_NOTIONAL") ?? findFilter(filters, "NOTIONAL");
+
+    return {
+      minQty: Math.max(toNumber(lotSize?.minQty), toNumber(market.limits?.amount?.min)),
+      stepSize: toNumber(lotSize?.stepSize, 0),
+      minPrice: Math.max(toNumber(priceFilter?.minPrice), toNumber(market.limits?.price?.min)),
+      maxPrice: Math.max(toNumber(priceFilter?.maxPrice), toNumber(market.limits?.price?.max)),
+      tickSize: toNumber(priceFilter?.tickSize, 0),
+      minNotional: Math.max(
+        toNumber(minNotionalFilter?.minNotional ?? minNotionalFilter?.notional),
+        toNumber(market.limits?.cost?.min)
+      )
+    };
+  }
+
+  private toAmountPrecision(symbol: string, quantity: number): number {
+    const precise = Number(this.exchange.amountToPrecision(symbol, quantity));
+    return Number.isFinite(precise) ? precise : quantity;
+  }
+
+  private toPricePrecision(symbol: string, price: number): number {
+    const precise = Number(this.exchange.priceToPrecision(symbol, price));
+    return Number.isFinite(precise) ? precise : price;
+  }
+
+  private async normalizeOrderRequest(request: PlaceOrderRequest): Promise<NormalizedOrderRequest> {
+    const adjustments: string[] = [];
+    const filters = this.getVenueFilters(request.symbol);
+
+    let quantity = request.quantity;
+    if (filters.stepSize > 0) {
+      const rounded = roundDownToStep(quantity, filters.stepSize);
+      if (rounded !== quantity) adjustments.push(`quantity rounded to stepSize (${quantity} -> ${rounded})`);
+      quantity = rounded;
+    }
+
+    const preciseQuantity = this.toAmountPrecision(request.symbol, quantity);
+    if (preciseQuantity !== quantity) {
+      adjustments.push(`quantity normalized to exchange precision (${quantity} -> ${preciseQuantity})`);
+      quantity = preciseQuantity;
+    }
+
+    if (quantity <= 0) throw new Error(`Order quantity became non-positive after normalization for ${request.symbol}.`);
+    if (filters.minQty > 0 && quantity < filters.minQty) {
+      throw new Error(`Order quantity ${quantity} below minQty ${filters.minQty} for ${request.symbol}.`);
+    }
+
+    let price = request.price;
+    if (request.type === "limit") {
+      if (price === undefined || price <= 0) throw new Error(`Limit order price missing for ${request.symbol}.`);
+
+      if (filters.tickSize > 0) {
+        const rounded = roundDownToStep(price, filters.tickSize);
+        if (rounded !== price) adjustments.push(`price rounded to tickSize (${price} -> ${rounded})`);
+        price = rounded;
+      }
+
+      const precisePrice = this.toPricePrecision(request.symbol, price);
+      if (precisePrice !== price) {
+        adjustments.push(`price normalized to exchange precision (${price} -> ${precisePrice})`);
+        price = precisePrice;
+      }
+
+      if (filters.minPrice > 0 && price < filters.minPrice) {
+        throw new Error(`Order price ${price} below minPrice ${filters.minPrice} for ${request.symbol}.`);
+      }
+      if (filters.maxPrice > 0 && price > filters.maxPrice) {
+        throw new Error(`Order price ${price} above maxPrice ${filters.maxPrice} for ${request.symbol}.`);
+      }
+    }
+
+    let referencePrice = price;
+    if (referencePrice === undefined || referencePrice <= 0) {
+      const quote = await this.getQuote(request.symbol);
+      referencePrice = request.side === "buy" ? quote.ask || quote.last : quote.bid || quote.last;
+    }
+
+    if (filters.minNotional > 0 && quantity * referencePrice < filters.minNotional) {
+      throw new Error(
+        `Order notional ${quantity * referencePrice} below minNotional ${filters.minNotional} for ${request.symbol}.`
+      );
+    }
+
+    return {
+      request: {
+        ...request,
+        quantity,
+        price
+      },
+      adjustments
+    };
   }
 
   async getAccount(): Promise<AccountSnapshot> {
@@ -107,28 +248,39 @@ export class BinanceAdapter implements ExchangeAdapter {
   async placeOrder(request: PlaceOrderRequest): Promise<Order> {
     this.assertOrderPlacementAllowed();
     await this.ensureInit();
+
+    const normalized = await this.normalizeOrderRequest(request);
+    if (normalized.adjustments.length > 0) {
+      logger.info({
+        event: "binance_order_normalized",
+        symbol: request.symbol,
+        clientOrderId: request.clientOrderId,
+        adjustments: normalized.adjustments
+      });
+    }
+
     const response = asOrderPayload(
       await withRetry(() =>
         this.exchange.createOrder(
-          request.symbol,
-          request.type,
-          request.side,
-          request.quantity,
-          request.price,
-          { newClientOrderId: request.clientOrderId }
+          normalized.request.symbol,
+          normalized.request.type,
+          normalized.request.side,
+          normalized.request.quantity,
+          normalized.request.price,
+          { newClientOrderId: normalized.request.clientOrderId }
         )
       )
     );
 
     return {
       id: String(response.id ?? crypto.randomUUID()),
-      clientOrderId: String(response.clientOrderId ?? request.clientOrderId),
-      symbol: request.symbol,
-      side: request.side,
-      type: request.type,
+      clientOrderId: String(response.clientOrderId ?? normalized.request.clientOrderId),
+      symbol: normalized.request.symbol,
+      side: normalized.request.side,
+      type: normalized.request.type,
       status: response.status === "closed" ? "filled" : "new",
-      price: request.price,
-      quantity: request.quantity,
+      price: normalized.request.price,
+      quantity: normalized.request.quantity,
       filledQuantity: Number(response.filled ?? 0),
       ts: Date.now()
     };

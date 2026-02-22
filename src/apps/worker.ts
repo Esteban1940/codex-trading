@@ -1,5 +1,6 @@
 ﻿import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
+import { assertConservativeLiveConfig } from "../infra/liveSafety.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
 import { MockExchangeAdapter } from "../adapters/mock/mockExchangeAdapter.js";
@@ -27,8 +28,12 @@ function parseTimeframes(raw: string): [string, string] {
   return [parts[0] ?? "15m", parts[1] ?? "1h"];
 }
 
-if (config.WORKER_REAL_ADAPTER && !config.LIVE_TRADING) {
-  throw new Error("Worker real adapter blocked. Set LIVE_TRADING=true in .env.");
+if (config.WORKER_REAL_ADAPTER && !config.LIVE_TRADING && !config.READ_ONLY_MODE) {
+  throw new Error("Worker real adapter blocked. Set LIVE_TRADING=true or READ_ONLY_MODE=true in .env.");
+}
+
+if (config.LIVE_TRADING) {
+  assertConservativeLiveConfig(config);
 }
 
 const bot = new BinanceSpotBot(
@@ -61,9 +66,9 @@ const bot = new BinanceSpotBot(
     maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
     maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
     maxTradesPerDay: config.RISK_MAX_TRADES_PER_DAY,
-    maxOpenPositions: 5,
-    maxNotionalPerSymbolUsd: 1_000_000,
-    maxNotionalPerMarketUsd: 1_000_000,
+    maxOpenPositions: config.MAX_OPEN_POSITIONS,
+    maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
+    maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT
   }),
   {
@@ -80,7 +85,8 @@ const bot = new BinanceSpotBot(
     entryLimitOffsetBps: config.EXEC_ENTRY_LIMIT_OFFSET_BPS,
     entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
     exitOrderType: config.EXEC_EXIT_ORDER_TYPE,
-    liveTrading: config.LIVE_TRADING
+    liveTrading: config.LIVE_TRADING,
+    readOnlyMode: config.READ_ONLY_MODE
   }
 );
 
@@ -100,7 +106,15 @@ async function main(): Promise<void> {
     allocatorMinScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST,
     minHoldMinutes: config.MIN_HOLD_MINUTES,
     minNotionalUsdt: config.MIN_NOTIONAL_USDT,
-    paperInitialUsdt: config.PAPER_INITIAL_USDT
+    paperInitialUsdt: config.PAPER_INITIAL_USDT,
+    maxTradesPerDay: config.RISK_MAX_TRADES_PER_DAY,
+    maxDailyLossUsdt: config.RISK_MAX_DAILY_LOSS_USDT,
+    maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
+    maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
+    maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
+    maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
+    readOnlyMode: config.READ_ONLY_MODE,
+    liveRequireConservativeLimits: config.LIVE_REQUIRE_CONSERVATIVE_LIMITS
   });
 
   let cycle = 0;

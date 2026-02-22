@@ -15,6 +15,7 @@ Base currency and performance target:
 - Withdrawals must stay disabled.
 - Live mode is blocked unless `LIVE_TRADING=true`.
 - Mainnet order placement is blocked when `LIVE_TRADING=false`.
+- `READ_ONLY_MODE=true` allows real-adapter smoke tests without placing orders.
 
 ## Setup
 
@@ -30,6 +31,7 @@ Required env values:
 - `BINANCE_TESTNET=true` for safe testing
 - `PAPER_INITIAL_USDT` to mirror your paper account size (example `94`)
 - `MIN_NOTIONAL_USDT` to enforce min order notional (default `10`)
+- Live conservative limits are validated at startup (`LIVE_REQUIRE_CONSERVATIVE_LIMITS=true`)
 
 ## Commands
 
@@ -46,6 +48,12 @@ pnpm dev:paper --real-adapter --cycles 3 --interval-ms 60000
 Paper with calibrated short-run:
 ```bash
 pnpm dev:paper --cycles 30 --interval-ms 3000
+```
+
+Read-only smoke test with real adapter:
+```bash
+# .env: READ_ONLY_MODE=true, LIVE_TRADING=false
+pnpm dev:paper --real-adapter --cycles 10 --interval-ms 60000
 ```
 
 Autonomous loop worker:

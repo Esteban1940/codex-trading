@@ -28,7 +28,7 @@ Required env values:
 - `SYMBOLS=BTC/USDT,ETH/USDT`
 - `TIMEFRAMES=15m,1h`
 - `BINANCE_API_KEY`, `BINANCE_API_SECRET`
-- `BINANCE_TESTNET=true` for safe testing
+- `BINANCE_TESTNET=false` by default for mainnet read-only smoke tests (`READ_ONLY_MODE=true`)
 - `PAPER_INITIAL_USDT` to mirror your paper account size (example `94`)
 - `MIN_NOTIONAL_USDT` to enforce min order notional (default `10`)
 - Ensure `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equity >= MIN_NOTIONAL_USDT` (for ~94 USDT, use at least `0.11` per symbol)
@@ -115,6 +115,7 @@ If runtime returns Binance `-2015`:
 - verify IP whitelist includes your current IP (if enabled),
 - re-check key/secret copy in `.env`.
 - for Binance demo endpoint migrations, set `BINANCE_TESTNET_BASE_URL` explicitly.
+- in read-only mode, adapter can retry once on the opposite network when auth mismatch is detected.
 
 ## Notes on paper behavior
 

@@ -125,23 +125,73 @@ function extractBinanceCode(error: unknown): number | undefined {
 }
 
 export class BinanceAdapter implements ExchangeAdapter {
-  private readonly exchange: BinanceExchange = createBinanceClient();
+  private exchange: BinanceExchange = createBinanceClient(config.BINANCE_TESTNET);
   private initialized = false;
+  private activeTestnet = config.BINANCE_TESTNET;
+  private networkFallbackAttempted = false;
 
   private assertOrderPlacementAllowed(): void {
-    if (!config.BINANCE_TESTNET && !config.LIVE_TRADING) {
+    if (!this.activeTestnet && !config.LIVE_TRADING) {
       throw new Error("Order placement blocked: BINANCE_TESTNET=false requires LIVE_TRADING=true.");
     }
   }
 
+  private currentNetworkLabel(): "testnet" | "mainnet" {
+    return this.activeTestnet ? "testnet" : "mainnet";
+  }
+
+  private switchNetwork(testnet: boolean): void {
+    this.exchange = createBinanceClient(testnet);
+    this.activeTestnet = testnet;
+    this.initialized = false;
+  }
+
+  private shouldAttemptNetworkFallback(error: unknown): boolean {
+    if (this.networkFallbackAttempted) return false;
+    if (config.LIVE_TRADING) return false;
+    if (!config.READ_ONLY_MODE) return false;
+
+    const code = extractBinanceCode(error);
+    if (code === -2015) return true;
+
+    const message = asError(error).message.toLowerCase();
+    return (
+      message.includes("invalid api-key") ||
+      message.includes("permissions for action")
+    );
+  }
+
   private async ensureInit(): Promise<void> {
     if (this.initialized) return;
-    await this.callExchange("loadMarkets", () => this.exchange.loadMarkets());
+
     try {
-      await validateBinanceKeySecurity(this.exchange);
+      await this.callExchange("loadMarkets", () => this.exchange.loadMarkets());
+      await validateBinanceKeySecurity(this.exchange, { testnet: this.activeTestnet });
     } catch (error) {
-      throw this.toActionableExchangeError(error, "validateBinanceKeySecurity");
+      if (this.shouldAttemptNetworkFallback(error)) {
+        const from = this.currentNetworkLabel();
+        const targetTestnet = !this.activeTestnet;
+        this.networkFallbackAttempted = true;
+        this.switchNetwork(targetTestnet);
+        const to = this.currentNetworkLabel();
+        logger.warn({
+          event: "binance_network_fallback",
+          reason: "auth_or_permission_failure_in_read_only_mode",
+          from,
+          to
+        });
+
+        try {
+          await this.callExchange("loadMarkets", () => this.exchange.loadMarkets());
+          await validateBinanceKeySecurity(this.exchange, { testnet: this.activeTestnet });
+        } catch (fallbackError) {
+          throw this.toActionableExchangeError(fallbackError, "loadMarkets/validateBinanceKeySecurity");
+        }
+      } else {
+        throw this.toActionableExchangeError(error, "loadMarkets/validateBinanceKeySecurity");
+      }
     }
+
     this.initialized = true;
   }
 
@@ -162,16 +212,17 @@ export class BinanceAdapter implements ExchangeAdapter {
     const err = asError(error);
     const code = extractBinanceCode(error);
     const context = `Binance adapter operation failed: ${operation}.`;
+    const networkHint = this.currentNetworkLabel();
 
     if (code === -2015 || err.message.includes("Invalid API-key, IP, or permissions for action")) {
       return new Error(
         [
           context,
           "Authentication failed (-2015): invalid API key, IP whitelist, or permissions.",
-          `Current mode: BINANCE_TESTNET=${String(config.BINANCE_TESTNET)}, READ_ONLY_MODE=${String(config.READ_ONLY_MODE)}.`,
+          `Current effective mode: ${networkHint.toUpperCase()}, READ_ONLY_MODE=${String(config.READ_ONLY_MODE)}.`,
           "Checklist:",
-          "1) If BINANCE_TESTNET=true, use API key/secret created in Binance Spot Testnet.",
-          "2) If BINANCE_TESTNET=false, use mainnet Binance API key/secret.",
+          "1) If using TESTNET, use API key/secret from Binance Spot Testnet.",
+          "2) If using MAINNET, use Binance mainnet API key/secret.",
           "3) Ensure API key has at least 'Enable Reading' permission.",
           "4) If IP whitelist is enabled, include your current public IP.",
           "5) Recreate key/secret if recently rotated and update .env."
@@ -196,6 +247,25 @@ export class BinanceAdapter implements ExchangeAdapter {
     try {
       return await withRetry(fn, 3, 300, (error) => !this.isNonRetryableExchangeError(error));
     } catch (error) {
+      if (this.shouldAttemptNetworkFallback(error)) {
+        const from = this.currentNetworkLabel();
+        this.networkFallbackAttempted = true;
+        this.switchNetwork(!this.activeTestnet);
+        const to = this.currentNetworkLabel();
+        logger.warn({
+          event: "binance_network_fallback",
+          reason: "auth_or_permission_failure_in_read_only_mode",
+          operation,
+          from,
+          to
+        });
+
+        try {
+          return await withRetry(fn, 3, 300, (fallbackError) => !this.isNonRetryableExchangeError(fallbackError));
+        } catch (fallbackError) {
+          throw this.toActionableExchangeError(fallbackError, `${operation} (after network fallback)`);
+        }
+      }
       throw this.toActionableExchangeError(error, operation);
     }
   }

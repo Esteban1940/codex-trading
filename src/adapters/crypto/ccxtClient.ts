@@ -81,7 +81,7 @@ function assertBinanceCredentialsPresent(): void {
   }
 }
 
-export function createBinanceClient(): BinanceExchange {
+export function createBinanceClient(useTestnet = config.BINANCE_TESTNET): BinanceExchange {
   assertBinanceCredentialsPresent();
   const client = new ccxt.binance({
     apiKey: config.BINANCE_API_KEY,
@@ -90,7 +90,7 @@ export function createBinanceClient(): BinanceExchange {
     options: { defaultType: "spot" }
   }) as unknown as BinanceExchange;
 
-  if (config.BINANCE_TESTNET) {
+  if (useTestnet) {
     client.setSandboxMode(true);
     applyTestnetBaseUrlOverride(client);
   }
@@ -113,14 +113,19 @@ function applyTestnetBaseUrlOverride(client: BinanceExchange): void {
   if (api.sapi) api.sapi = `${base}/sapi/v1`;
 }
 
-export async function validateBinanceKeySecurity(exchange: BinanceExchange): Promise<void> {
+export async function validateBinanceKeySecurity(
+  exchange: BinanceExchange,
+  options?: { testnet?: boolean }
+): Promise<void> {
+  const useTestnet = options?.testnet ?? config.BINANCE_TESTNET;
+
   if (config.BINANCE_ENABLE_WITHDRAWALS) {
     throw new Error("BINANCE_ENABLE_WITHDRAWALS must remain false.");
   }
 
   // Binance testnet does not expose sapi account restriction endpoints in CCXT.
   // We still enforce local config (`BINANCE_ENABLE_WITHDRAWALS=false`) and skip remote restriction checks here.
-  if (config.BINANCE_TESTNET) return;
+  if (useTestnet) return;
 
   const raw = await withRetry(() => exchange.sapiGetAccountApiRestrictions());
   if (raw?.enableWithdrawals === true) {

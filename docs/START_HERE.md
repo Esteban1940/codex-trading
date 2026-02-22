@@ -21,7 +21,7 @@ Your funds remain in your Binance account. The bot only sends API orders.
 
 ```env
 LIVE_TRADING=false
-BINANCE_TESTNET=true
+BINANCE_TESTNET=false
 BINANCE_ENABLE_WITHDRAWALS=false
 
 SYMBOLS=BTC/USDT,ETH/USDT
@@ -61,7 +61,7 @@ Use real adapter but force read-only to verify connectivity, balances, and data 
 ```env
 LIVE_TRADING=false
 READ_ONLY_MODE=true
-BINANCE_TESTNET=true
+BINANCE_TESTNET=false
 ```
 
 ```bash
@@ -102,7 +102,7 @@ pnpm dev:live --cycles 0 --interval-ms 60000
 
 ## 7) Pre-live checklist
 
-1. At least 24h stable loop with real adapter in read-only/testnet.
+1. At least 24h stable loop with real adapter in read-only mode (mainnet or testnet, matching your key origin).
 2. Kill switch tested (`KILL_SWITCH=true`).
 3. Risk liquidation path tested (`LIQUIDATE_ON_RISK=true`).
 4. Conservative limits active (validation passes at startup).
@@ -131,8 +131,10 @@ If you see `-2015 Invalid API-key, IP, or permissions for action`:
 ```env
 LIVE_TRADING=false
 READ_ONLY_MODE=true
-BINANCE_TESTNET=true
+BINANCE_TESTNET=false
 ```
+
+In read-only mode, adapter can auto-fallback testnet/mainnet once on auth mismatch (`-2015`), then continues with the working network.
 
 If your key is from Binance Demo Trading and still fails, set the demo base URL override:
 

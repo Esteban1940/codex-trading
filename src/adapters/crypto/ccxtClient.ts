@@ -55,6 +55,9 @@ export interface BinanceExchange {
   fetchOHLCV(symbol: string, timeframe?: string, since?: number): Promise<unknown>;
   setSandboxMode(enabled: boolean): void;
   sapiGetAccountApiRestrictions(): Promise<ApiRestrictions>;
+  urls?: {
+    api?: Record<string, string>;
+  };
 }
 
 function assertBinanceCredentialsPresent(): void {
@@ -81,8 +84,27 @@ export function createBinanceClient(): BinanceExchange {
     options: { defaultType: "spot" }
   }) as unknown as BinanceExchange;
 
-  if (config.BINANCE_TESTNET) client.setSandboxMode(true);
+  if (config.BINANCE_TESTNET) {
+    client.setSandboxMode(true);
+    applyTestnetBaseUrlOverride(client);
+  }
   return client;
+}
+
+function applyTestnetBaseUrlOverride(client: BinanceExchange): void {
+  const base = config.BINANCE_TESTNET_BASE_URL.trim().replace(/\/+$/, "");
+  if (!base) return;
+  if (!/^https?:\/\//i.test(base)) {
+    throw new Error("BINANCE_TESTNET_BASE_URL must include protocol (example: https://demo-api.binance.com).");
+  }
+
+  const api = client.urls?.api;
+  if (!api) return;
+
+  api.public = `${base}/api/v3`;
+  api.private = `${base}/api/v3`;
+  api.v1 = `${base}/api/v1`;
+  if (api.sapi) api.sapi = `${base}/sapi/v1`;
 }
 
 export async function validateBinanceKeySecurity(exchange: BinanceExchange): Promise<void> {

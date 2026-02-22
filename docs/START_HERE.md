@@ -123,3 +123,11 @@ LIVE_TRADING=false
 READ_ONLY_MODE=true
 BINANCE_TESTNET=true
 ```
+
+If your key is from Binance Demo Trading and still fails, set the demo base URL override:
+
+```env
+BINANCE_TESTNET_BASE_URL=https://demo-api.binance.com
+```
+
+Use the exact base URL from Binance demo docs if it differs.

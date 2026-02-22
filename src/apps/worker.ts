@@ -114,7 +114,8 @@ async function main(): Promise<void> {
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     readOnlyMode: config.READ_ONLY_MODE,
-    liveRequireConservativeLimits: config.LIVE_REQUIRE_CONSERVATIVE_LIMITS
+    liveRequireConservativeLimits: config.LIVE_REQUIRE_CONSERVATIVE_LIMITS,
+    testnetBaseUrlOverrideConfigured: config.BINANCE_TESTNET_BASE_URL.trim().length > 0
   });
 
   let cycle = 0;

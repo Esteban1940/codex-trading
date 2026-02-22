@@ -75,6 +75,7 @@ const envSchema = z.object({
   BINANCE_API_KEY: z.string().default(""),
   BINANCE_API_SECRET: z.string().default(""),
   BINANCE_TESTNET: z.string().default("true").transform((v) => v === "true"),
+  BINANCE_TESTNET_BASE_URL: z.string().default(""),
   BINANCE_ENABLE_WITHDRAWALS: z.string().default("false").transform((v) => v === "true"),
 
   SYMBOLS: z.string().default("BTC/USDT,ETH/USDT"),

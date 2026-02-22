@@ -108,3 +108,4 @@ If runtime returns Binance `-2015`:
 - ensure API key has `Enable Reading`,
 - verify IP whitelist includes your current IP (if enabled),
 - re-check key/secret copy in `.env`.
+- for Binance demo endpoint migrations, set `BINANCE_TESTNET_BASE_URL` explicitly.

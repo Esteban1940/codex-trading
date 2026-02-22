@@ -105,3 +105,21 @@ pnpm dev:live --cycles 0 --interval-ms 60000
 - No performance guarantees.
 - Mainnet order placement is blocked unless `LIVE_TRADING=true`.
 - Live startup fails if conservative guardrails are violated (can be disabled with `LIVE_REQUIRE_CONSERVATIVE_LIMITS=false`).
+
+## 9) Troubleshooting auth errors
+
+If you see `-2015 Invalid API-key, IP, or permissions for action`:
+
+1. Check environment pairing:
+   - `BINANCE_TESTNET=true` -> use Binance Spot Testnet key/secret.
+   - `BINANCE_TESTNET=false` -> use Binance mainnet key/secret.
+2. Enable at least `Enable Reading` permission on the key.
+3. If IP whitelist is active, add your current public IP.
+4. Re-copy key/secret to `.env` (no quotes, no trailing spaces).
+5. Retry with read-only smoke mode first:
+
+```env
+LIVE_TRADING=false
+READ_ONLY_MODE=true
+BINANCE_TESTNET=true
+```

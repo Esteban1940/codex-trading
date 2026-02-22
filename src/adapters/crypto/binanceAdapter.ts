@@ -81,6 +81,26 @@ function findFilter(filters: MarketFilter[] | undefined, filterType: string): Ma
   return filters?.find((f) => f.filterType === filterType);
 }
 
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function extractBinanceCode(error: unknown): number | undefined {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const raw = (error as { code?: unknown }).code;
+    const code = Number(raw);
+    if (Number.isFinite(code)) return code;
+  }
+
+  const message = asError(error).message;
+  const jsonMatch = message.match(/"code"\s*:\s*(-?\d+)/);
+  if (jsonMatch) return Number(jsonMatch[1]);
+  const looseMatch = message.match(/\bcode\s*[:=]\s*(-?\d+)/i);
+  if (looseMatch) return Number(looseMatch[1]);
+
+  return undefined;
+}
+
 export class BinanceAdapter implements ExchangeAdapter {
   private readonly exchange: BinanceExchange = createBinanceClient();
   private initialized = false;
@@ -93,9 +113,68 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   private async ensureInit(): Promise<void> {
     if (this.initialized) return;
-    await withRetry(() => this.exchange.loadMarkets());
-    await validateBinanceKeySecurity(this.exchange);
+    await this.callExchange("loadMarkets", () => this.exchange.loadMarkets());
+    try {
+      await validateBinanceKeySecurity(this.exchange);
+    } catch (error) {
+      throw this.toActionableExchangeError(error, "validateBinanceKeySecurity");
+    }
     this.initialized = true;
+  }
+
+  private isNonRetryableExchangeError(error: unknown): boolean {
+    const code = extractBinanceCode(error);
+    if (code === -2015 || code === -2014) return true;
+
+    const message = asError(error).message.toLowerCase();
+    if (message.includes("invalid api-key")) return true;
+    if (message.includes("api-key format invalid")) return true;
+    if (message.includes("permissions for action")) return true;
+    if (message.includes("not have a testnet/sandbox url for sapi")) return true;
+
+    return false;
+  }
+
+  private toActionableExchangeError(error: unknown, operation: string): Error {
+    const err = asError(error);
+    const code = extractBinanceCode(error);
+    const context = `Binance adapter operation failed: ${operation}.`;
+
+    if (code === -2015 || err.message.includes("Invalid API-key, IP, or permissions for action")) {
+      return new Error(
+        [
+          context,
+          "Authentication failed (-2015): invalid API key, IP whitelist, or permissions.",
+          `Current mode: BINANCE_TESTNET=${String(config.BINANCE_TESTNET)}, READ_ONLY_MODE=${String(config.READ_ONLY_MODE)}.`,
+          "Checklist:",
+          "1) If BINANCE_TESTNET=true, use API key/secret created in Binance Spot Testnet.",
+          "2) If BINANCE_TESTNET=false, use mainnet Binance API key/secret.",
+          "3) Ensure API key has at least 'Enable Reading' permission.",
+          "4) If IP whitelist is enabled, include your current public IP.",
+          "5) Recreate key/secret if recently rotated and update .env."
+        ].join("\n")
+      );
+    }
+
+    if (code === -2014 || err.message.includes("API-key format invalid")) {
+      return new Error(
+        [
+          context,
+          "Authentication failed (-2014): API key format invalid.",
+          "Verify BINANCE_API_KEY and BINANCE_API_SECRET were copied completely with no extra quotes/spaces."
+        ].join("\n")
+      );
+    }
+
+    return err;
+  }
+
+  private async callExchange<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await withRetry(fn, 3, 300, (error) => !this.isNonRetryableExchangeError(error));
+    } catch (error) {
+      throw this.toActionableExchangeError(error, operation);
+    }
   }
 
   private getMarket(symbol: string): ExchangeMarket {
@@ -205,7 +284,7 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   async getAccount(): Promise<AccountSnapshot> {
     await this.ensureInit();
-    const bal = asBalancePayload(await withRetry(() => this.exchange.fetchBalance()));
+    const bal = asBalancePayload(await this.callExchange("fetchBalance(getAccount)", () => this.exchange.fetchBalance()));
     return {
       equityUsd: Number(bal.total?.USDT ?? 0),
       cashUsd: Number(bal.free?.USDT ?? 0),
@@ -216,7 +295,7 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   async getBalances(): Promise<Record<string, number>> {
     await this.ensureInit();
-    const bal = asBalancePayload(await withRetry(() => this.exchange.fetchBalance()));
+    const bal = asBalancePayload(await this.callExchange("fetchBalance(getBalances)", () => this.exchange.fetchBalance()));
     const free = bal.free ?? {};
     const out: Record<string, number> = {};
     for (const [asset, qty] of Object.entries(free)) {
@@ -227,7 +306,7 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   async getPositions(): Promise<Position[]> {
     await this.ensureInit();
-    const bal = asBalancePayload(await withRetry(() => this.exchange.fetchBalance()));
+    const bal = asBalancePayload(await this.callExchange("fetchBalance(getPositions)", () => this.exchange.fetchBalance()));
     const positions: Position[] = [];
 
     for (const [asset, qty] of Object.entries(bal.total ?? {})) {
@@ -260,7 +339,7 @@ export class BinanceAdapter implements ExchangeAdapter {
     }
 
     const response = asOrderPayload(
-      await withRetry(() =>
+      await this.callExchange("createOrder", () =>
         this.exchange.createOrder(
           normalized.request.symbol,
           normalized.request.type,
@@ -288,12 +367,12 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   async cancelOrder(orderId: string): Promise<void> {
     await this.ensureInit();
-    await withRetry(() => this.exchange.cancelOrder(orderId));
+    await this.callExchange("cancelOrder", () => this.exchange.cancelOrder(orderId));
   }
 
   async getOrderStatus(orderId: string): Promise<Order> {
     await this.ensureInit();
-    const order = asOrderPayload(await withRetry(() => this.exchange.fetchOrder(orderId)));
+    const order = asOrderPayload(await this.callExchange("fetchOrder", () => this.exchange.fetchOrder(orderId)));
     const normalizedStatus: Order["status"] =
       order.status === "closed"
         ? "filled"
@@ -319,7 +398,7 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   async getQuote(symbol: string): Promise<Quote> {
     await this.ensureInit();
-    const ticker = asTickerPayload(await withRetry(() => this.exchange.fetchTicker(symbol)));
+    const ticker = asTickerPayload(await this.callExchange("fetchTicker", () => this.exchange.fetchTicker(symbol)));
     return {
       symbol,
       bid: Number(ticker.bid ?? ticker.last ?? 0),
@@ -331,7 +410,9 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   async getHistory(symbol: string, from: Date, to: Date, timeframe: string): Promise<Candle[]> {
     await this.ensureInit();
-    const data = asOhlcvRows(await withRetry(() => this.exchange.fetchOHLCV(symbol, timeframe, from.getTime())));
+    const data = asOhlcvRows(
+      await this.callExchange("fetchOHLCV", () => this.exchange.fetchOHLCV(symbol, timeframe, from.getTime()))
+    );
     return data
       .filter((row: OhlcvRow) => row[0] <= to.getTime())
       .map((row: OhlcvRow) => ({

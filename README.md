@@ -100,3 +100,11 @@ pnpm run test
 
 - `docs/TRADING_LOGIC.md`
 - `docs/START_HERE.md`
+
+## Auth troubleshooting
+
+If runtime returns Binance `-2015`:
+- verify `BINANCE_TESTNET` matches the key origin (testnet vs mainnet),
+- ensure API key has `Enable Reading`,
+- verify IP whitelist includes your current IP (if enabled),
+- re-check key/secret copy in `.env`.

@@ -1,6 +1,11 @@
 ﻿export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelayMs = 300): Promise<T> {
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  baseDelayMs = 300,
+  shouldRetry: (error: unknown) => boolean = () => true
+): Promise<T> {
   let attempt = 0;
   let lastError: unknown;
 
@@ -9,6 +14,7 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDel
       return await fn();
     } catch (error) {
       lastError = error;
+      if (!shouldRetry(error)) throw error;
       if (attempt === maxRetries) break;
       await sleep(baseDelayMs * 2 ** attempt);
       attempt += 1;

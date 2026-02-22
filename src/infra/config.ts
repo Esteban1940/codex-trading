@@ -37,7 +37,7 @@ const envSchema = z.object({
   ALLOCATOR_MAX_EXPOSURE_TOTAL: z.coerce.number().default(0.8),
   ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL: z.coerce.number().default(0.6),
   ALLOCATOR_REBALANCE_THRESHOLD: z.coerce.number().default(0.08),
-  ALLOCATOR_MIN_SCORE_TO_INVEST: z.coerce.number().default(0.15),
+  ALLOCATOR_MIN_SCORE_TO_INVEST: z.coerce.number().default(0.1),
 
   SIGNAL_EMA_FAST: z.coerce.number().default(21),
   SIGNAL_EMA_SLOW: z.coerce.number().default(55),
@@ -46,14 +46,14 @@ const envSchema = z.object({
   SIGNAL_ATR_PERIOD: z.coerce.number().default(14),
   SIGNAL_MAX_VOLATILITY_PCT: z.coerce.number().default(6),
   SIGNAL_COOLDOWN_MINUTES: z.coerce.number().default(30),
-  SIGNAL_MIN_ENTRY_SCORE: z.coerce.number().default(0.25),
-  SIGNAL_MIN_EDGE_MULTIPLIER: z.coerce.number().default(2),
-  SIGNAL_EDGE_PCT_CAP: z.coerce.number().default(0),
-  MIN_HOLD_MINUTES: z.coerce.number().default(45),
+  SIGNAL_MIN_ENTRY_SCORE: z.coerce.number().default(0.2),
+  SIGNAL_MIN_EDGE_MULTIPLIER: z.coerce.number().default(1.2),
+  SIGNAL_EDGE_PCT_CAP: z.coerce.number().default(0.35),
+  MIN_HOLD_MINUTES: z.coerce.number().default(30),
 
   DEFAULT_FEE_BPS: z.coerce.number().default(10),
   DEFAULT_SLIPPAGE_BPS: z.coerce.number().default(5),
-  PAPER_SPREAD_BPS: z.coerce.number().default(6),
+  PAPER_SPREAD_BPS: z.coerce.number().default(10),
   PAPER_INITIAL_USDT: z.coerce.number().default(10000),
   MIN_NOTIONAL_USDT: z.coerce.number().default(10),
 

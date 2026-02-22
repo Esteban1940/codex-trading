@@ -14,6 +14,28 @@ const SYMBOL_CONFIG: Record<"BTC/USDT" | "ETH/USDT", PriceState> = {
   "ETH/USDT": { last: 3200, drift: 0.00003, volatility: 0.0045 }
 };
 
+function timeframeToMs(timeframe: string): number {
+  const normalized = timeframe.trim().toLowerCase();
+  const match = normalized.match(/^(\d+)([mhdw])$/);
+  if (!match) return 15 * 60 * 1000;
+
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return 15 * 60 * 1000;
+
+  switch (match[2]) {
+    case "m":
+      return value * 60 * 1000;
+    case "h":
+      return value * 60 * 60 * 1000;
+    case "d":
+      return value * 24 * 60 * 60 * 1000;
+    case "w":
+      return value * 7 * 24 * 60 * 60 * 1000;
+    default:
+      return 15 * 60 * 1000;
+  }
+}
+
 export class MockExchangeAdapter extends MockBrokerAdapter implements ExchangeAdapter {
   private balances: Record<string, number> = { USDT: config.PAPER_INITIAL_USDT, BTC: 0, ETH: 0 };
   private priceState: Record<"BTC/USDT" | "ETH/USDT", PriceState> = {
@@ -46,7 +68,7 @@ export class MockExchangeAdapter extends MockBrokerAdapter implements ExchangeAd
   override async getHistory(symbol: string, from: Date, to: Date, timeframe = "15m"): Promise<Candle[]> {
     const normalized = symbol as "BTC/USDT" | "ETH/USDT";
     const baseState = this.priceState[normalized] ?? { last: 100, drift: 0, volatility: 0.002 };
-    const stepMs = timeframe === "1h" ? 60 * 60 * 1000 : 15 * 60 * 1000;
+    const stepMs = timeframeToMs(timeframe);
 
     const candles: Candle[] = [];
     let ts = from.getTime();

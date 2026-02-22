@@ -15,6 +15,18 @@ import { TwoSymbolBacktester } from "../backtest/backtester.js";
 
 const ALLOWED_SYMBOLS: SupportedSymbol[] = ["BTC/USDT", "ETH/USDT"];
 
+type PaperProfile = "default" | "moderate";
+
+interface RuntimeOverrides {
+  profileName: PaperProfile;
+  minEntryScore?: number;
+  minEdgeMultiplier?: number;
+  edgePctCap?: number;
+  allocatorMinScoreToInvest?: number;
+  minHoldMinutes?: number;
+  paperSpreadBps?: number;
+}
+
 function parseSymbols(raw: string): SupportedSymbol[] {
   const parsed = raw
     .split(",")
@@ -56,12 +68,12 @@ function buildSignalEngine(): SignalEngine {
   });
 }
 
-function buildAllocator(): PortfolioAllocator {
+function buildAllocator(overrides?: RuntimeOverrides): PortfolioAllocator {
   return new PortfolioAllocator({
     maxExposureTotal: config.ALLOCATOR_MAX_EXPOSURE_TOTAL,
     maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
     rebalanceThreshold: config.ALLOCATOR_REBALANCE_THRESHOLD,
-    minScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST
+    minScoreToInvest: overrides?.allocatorMinScoreToInvest ?? config.ALLOCATOR_MIN_SCORE_TO_INVEST
   });
 }
 
@@ -89,22 +101,24 @@ function buildRiskEngine(): RiskEngine {
   });
 }
 
-function buildBot(realAdapter: boolean): BinanceSpotBot {
+function buildBot(realAdapter: boolean, overrides?: RuntimeOverrides): BinanceSpotBot {
   const symbols = parseSymbols(config.SYMBOLS);
   const timeframes = parseTimeframes(config.TIMEFRAMES);
 
   const adapter = realAdapter ? new BinanceAdapter() : new MockExchangeAdapter();
 
-  return new BinanceSpotBot(adapter, buildSignalEngine(), buildAllocator(), buildInventory(), buildRiskEngine(), {
+  return new BinanceSpotBot(adapter, buildSignalEngine(), buildAllocator(overrides), buildInventory(), buildRiskEngine(), {
     symbols,
     timeframes,
+    maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
+    minNotionalUsdt: config.MIN_NOTIONAL_USDT,
     feeBps: config.DEFAULT_FEE_BPS,
     slippageBps: config.DEFAULT_SLIPPAGE_BPS,
-    paperSpreadBps: config.PAPER_SPREAD_BPS,
-    minHoldMinutes: config.MIN_HOLD_MINUTES,
-    minEntryScore: config.SIGNAL_MIN_ENTRY_SCORE,
-    minEdgeMultiplier: config.SIGNAL_MIN_EDGE_MULTIPLIER,
-    edgePctCap: config.SIGNAL_EDGE_PCT_CAP,
+    paperSpreadBps: overrides?.paperSpreadBps ?? config.PAPER_SPREAD_BPS,
+    minHoldMinutes: overrides?.minHoldMinutes ?? config.MIN_HOLD_MINUTES,
+    minEntryScore: overrides?.minEntryScore ?? config.SIGNAL_MIN_ENTRY_SCORE,
+    minEdgeMultiplier: overrides?.minEdgeMultiplier ?? config.SIGNAL_MIN_EDGE_MULTIPLIER,
+    edgePctCap: overrides?.edgePctCap ?? config.SIGNAL_EDGE_PCT_CAP,
     entryOrderType: config.EXEC_ENTRY_ORDER_TYPE,
     entryLimitOffsetBps: config.EXEC_ENTRY_LIMIT_OFFSET_BPS,
     entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
@@ -125,19 +139,37 @@ async function runLoop(bot: BinanceSpotBot, cycles: number, intervalMs: number):
   }
 }
 
-function logEffectiveRuntimeConfig(mode: "paper" | "live"): void {
+function resolvePaperProfile(raw: string): RuntimeOverrides {
+  const profile = raw.trim().toLowerCase();
+  if (profile === "default") return { profileName: "default" };
+  if (profile === "moderate") {
+    return {
+      profileName: "moderate",
+      minEntryScore: Math.min(config.SIGNAL_MIN_ENTRY_SCORE, 0.2),
+      minEdgeMultiplier: Math.min(config.SIGNAL_MIN_EDGE_MULTIPLIER, 1.2),
+      edgePctCap: config.SIGNAL_EDGE_PCT_CAP > 0 ? Math.min(config.SIGNAL_EDGE_PCT_CAP, 0.35) : 0.35,
+      allocatorMinScoreToInvest: Math.min(config.ALLOCATOR_MIN_SCORE_TO_INVEST, 0.1),
+      minHoldMinutes: Math.min(config.MIN_HOLD_MINUTES, 30),
+      paperSpreadBps: config.PAPER_SPREAD_BPS
+    };
+  }
+  throw new Error(`Unsupported paper profile "${raw}". Use default or moderate.`);
+}
+
+function logEffectiveRuntimeConfig(mode: "paper" | "live", overrides?: RuntimeOverrides): void {
   logger.info({
     event: "runtime_config",
     mode,
+    paperProfile: overrides?.profileName ?? "default",
     symbols: config.SYMBOLS,
     timeframes: config.TIMEFRAMES,
     feeBps: config.DEFAULT_FEE_BPS,
-    paperSpreadBps: config.PAPER_SPREAD_BPS,
-    signalMinEntryScore: config.SIGNAL_MIN_ENTRY_SCORE,
-    signalMinEdgeMultiplier: config.SIGNAL_MIN_EDGE_MULTIPLIER,
-    signalEdgePctCap: config.SIGNAL_EDGE_PCT_CAP,
-    allocatorMinScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST,
-    minHoldMinutes: config.MIN_HOLD_MINUTES,
+    paperSpreadBps: overrides?.paperSpreadBps ?? config.PAPER_SPREAD_BPS,
+    signalMinEntryScore: overrides?.minEntryScore ?? config.SIGNAL_MIN_ENTRY_SCORE,
+    signalMinEdgeMultiplier: overrides?.minEdgeMultiplier ?? config.SIGNAL_MIN_EDGE_MULTIPLIER,
+    signalEdgePctCap: overrides?.edgePctCap ?? config.SIGNAL_EDGE_PCT_CAP,
+    allocatorMinScoreToInvest: overrides?.allocatorMinScoreToInvest ?? config.ALLOCATOR_MIN_SCORE_TO_INVEST,
+    minHoldMinutes: overrides?.minHoldMinutes ?? config.MIN_HOLD_MINUTES,
     minNotionalUsdt: config.MIN_NOTIONAL_USDT,
     paperInitialUsdt: config.PAPER_INITIAL_USDT,
     maxTradesPerDay: config.RISK_MAX_TRADES_PER_DAY,
@@ -164,12 +196,14 @@ program
   .option("--cycles <number>", "Number of cycles", "1")
   .option("--interval-ms <number>", "Interval between cycles", String(config.WORKER_INTERVAL_MS))
   .option("--real-adapter", "Use Binance adapter (testnet/mainnet based on env)", false)
+  .option("--paper-profile <name>", "Paper profile: default|moderate", "default")
   .action(async (opts) => {
     if (Boolean(opts.realAdapter) && !config.BINANCE_TESTNET && !config.LIVE_TRADING && !config.READ_ONLY_MODE) {
       throw new Error("paper --real-adapter blocked on mainnet. Set LIVE_TRADING=true or enable BINANCE_TESTNET=true.");
     }
-    logEffectiveRuntimeConfig("paper");
-    const bot = buildBot(Boolean(opts.realAdapter));
+    const overrides = resolvePaperProfile(String(opts.paperProfile ?? "default"));
+    logEffectiveRuntimeConfig("paper", overrides);
+    const bot = buildBot(Boolean(opts.realAdapter), overrides);
     await runLoop(bot, Number(opts.cycles), Number(opts.intervalMs));
     logger.info({ event: "paper_done", report: bot.getReport() });
   });
@@ -179,7 +213,7 @@ program
   .option("--cycles <number>", "Number of cycles (0=infinite)", "0")
   .option("--interval-ms <number>", "Interval between cycles", String(config.WORKER_INTERVAL_MS))
   .action(async (opts) => {
-    logEffectiveRuntimeConfig("live");
+    logEffectiveRuntimeConfig("live", { profileName: "default" });
     if (!config.LIVE_TRADING) {
       throw new Error("LIVE mode blocked. Set LIVE_TRADING=true explicitly in .env.");
     }

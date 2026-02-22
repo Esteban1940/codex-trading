@@ -52,7 +52,13 @@ export interface BinanceExchange {
   cancelOrder(orderId: string): Promise<unknown>;
   fetchOrder(orderId: string): Promise<unknown>;
   fetchTicker(symbol: string): Promise<unknown>;
-  fetchOHLCV(symbol: string, timeframe?: string, since?: number): Promise<unknown>;
+  fetchOHLCV(
+    symbol: string,
+    timeframe?: string,
+    since?: number,
+    limit?: number,
+    params?: Record<string, unknown>
+  ): Promise<unknown>;
   setSandboxMode(enabled: boolean): void;
   sapiGetAccountApiRestrictions(): Promise<ApiRestrictions>;
   urls?: {

@@ -31,6 +31,7 @@ Required env values:
 - `BINANCE_TESTNET=true` for safe testing
 - `PAPER_INITIAL_USDT` to mirror your paper account size (example `94`)
 - `MIN_NOTIONAL_USDT` to enforce min order notional (default `10`)
+- Ensure `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equity >= MIN_NOTIONAL_USDT` (for ~94 USDT, use at least `0.11` per symbol)
 - Live conservative limits are validated at startup (`LIVE_REQUIRE_CONSERVATIVE_LIMITS=true`)
 
 ## Commands
@@ -43,6 +44,11 @@ pnpm dev:paper
 Paper with Binance adapter:
 ```bash
 pnpm dev:paper --real-adapter --cycles 3 --interval-ms 60000
+```
+
+Paper with moderate short-run calibration (recommended to validate entries/exits quickly):
+```bash
+pnpm dev:paper --real-adapter --paper-profile moderate --cycles 30 --interval-ms 15000
 ```
 
 Paper with calibrated short-run:
@@ -109,3 +115,8 @@ If runtime returns Binance `-2015`:
 - verify IP whitelist includes your current IP (if enabled),
 - re-check key/secret copy in `.env`.
 - for Binance demo endpoint migrations, set `BINANCE_TESTNET_BASE_URL` explicitly.
+
+## Notes on paper behavior
+
+- The Binance adapter now fetches the most recent OHLCV window each cycle (avoids stale candle windows).
+- Entry edge gating scales by fast timeframe so `1m/5m` tests are not blocked by a `15m`-sized threshold.

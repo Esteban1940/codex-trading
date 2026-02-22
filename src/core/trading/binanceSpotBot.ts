@@ -12,6 +12,8 @@ export type SupportedSymbol = "BTC/USDT" | "ETH/USDT";
 interface BotConfig {
   symbols: SupportedSymbol[];
   timeframes: [string, string];
+  maxExposurePerSymbol: number;
+  minNotionalUsdt: number;
   feeBps: number;
   slippageBps: number;
   paperSpreadBps: number;
@@ -63,6 +65,7 @@ interface RuntimeState {
   timeInPositionMs: number;
   timeInUsdtMs: number;
   lastEquityUsdt: number;
+  minNotionalFeasibilityWarned: boolean;
 }
 
 interface QuoteSnapshot {
@@ -84,6 +87,8 @@ interface EntryGate {
   passEdge: boolean;
   score: number;
   minScore: number;
+  timeframeMinutes: number;
+  timeframeScale: number;
   observedEdgePct: number;
   edgeBufferPct: number;
   roundTripCostPct: number;
@@ -134,7 +139,8 @@ export class BinanceSpotBot {
       losingSteps: 0,
       timeInPositionMs: 0,
       timeInUsdtMs: 0,
-      lastEquityUsdt: 0
+      lastEquityUsdt: 0,
+      minNotionalFeasibilityWarned: false
     };
   }
 
@@ -155,6 +161,7 @@ export class BinanceSpotBot {
       this.state.equityHistory.push(equityBefore);
     }
     this.rollDailyIfNeeded(now, equityBefore);
+    this.warnIfMinNotionalConstraints(equityBefore);
 
     const dt = Math.max(0, now - this.state.lastCycleMs);
     const exposureBefore =
@@ -172,6 +179,10 @@ export class BinanceSpotBot {
         this.adapter.getHistory(symbol, new Date(now - 30 * 24 * 60 * 60 * 1000), new Date(now), tfSlow)
       ])
     );
+    this.warnIfHistoryStale("BTC/USDT", tfFast, histories[0]?.[histories[0].length - 1]?.ts ?? 0, now);
+    this.warnIfHistoryStale("BTC/USDT", tfSlow, histories[1]?.[histories[1].length - 1]?.ts ?? 0, now);
+    this.warnIfHistoryStale("ETH/USDT", tfFast, histories[2]?.[histories[2].length - 1]?.ts ?? 0, now);
+    this.warnIfHistoryStale("ETH/USDT", tfSlow, histories[3]?.[histories[3].length - 1]?.ts ?? 0, now);
 
     const signals = {
       "BTC/USDT": this.signalEngine.evaluate({
@@ -232,8 +243,8 @@ export class BinanceSpotBot {
       const cooldownProtected = this.getCooldownProtectedSymbols(signals, currentWeights);
       const entrySuppressed: Array<{ symbol: SupportedSymbol; reason: string }> = [];
       const entryGate: Record<SupportedSymbol, EntryGate> = {
-        "BTC/USDT": this.evaluateEntryGate(signals["BTC/USDT"]),
-        "ETH/USDT": this.evaluateEntryGate(signals["ETH/USDT"])
+        "BTC/USDT": this.evaluateEntryGate(signals["BTC/USDT"], tfFast),
+        "ETH/USDT": this.evaluateEntryGate(signals["ETH/USDT"], tfFast)
       };
 
       const allocation = this.allocator.allocate({
@@ -571,11 +582,13 @@ export class BinanceSpotBot {
     return out;
   }
 
-  private evaluateEntryGate(signal: SignalSummary): EntryGate {
+  private evaluateEntryGate(signal: SignalSummary, fastTimeframe: string): EntryGate {
     const passScore = signal.score >= this.cfg.minEntryScore;
     const observedEdgePct = signal.features.atrPct;
     const roundTripCostPct = (2 * this.cfg.feeBps + this.cfg.paperSpreadBps) / 100;
-    const rawRequiredEdgePct = roundTripCostPct * this.cfg.minEdgeMultiplier;
+    const timeframeMinutes = this.timeframeToMinutes(fastTimeframe);
+    const timeframeScale = this.edgeTimeframeScale(timeframeMinutes);
+    const rawRequiredEdgePct = roundTripCostPct * this.cfg.minEdgeMultiplier * timeframeScale;
     const requiredEdgePct =
       this.cfg.edgePctCap > 0 ? Math.min(rawRequiredEdgePct, this.cfg.edgePctCap) : rawRequiredEdgePct;
     const edgeBufferPct = observedEdgePct - requiredEdgePct;
@@ -586,6 +599,8 @@ export class BinanceSpotBot {
       passEdge,
       score: signal.score,
       minScore: this.cfg.minEntryScore,
+      timeframeMinutes,
+      timeframeScale,
       observedEdgePct,
       edgeBufferPct,
       roundTripCostPct,
@@ -658,5 +673,71 @@ export class BinanceSpotBot {
     }
 
     return out;
+  }
+
+  private timeframeToMinutes(timeframe: string): number {
+    const normalized = timeframe.trim().toLowerCase();
+    const match = normalized.match(/^(\d+)([mhdw])$/);
+    if (!match) return 15;
+
+    const value = Number(match[1]);
+    if (!Number.isFinite(value) || value <= 0) return 15;
+
+    switch (match[2]) {
+      case "m":
+        return value;
+      case "h":
+        return value * 60;
+      case "d":
+        return value * 24 * 60;
+      case "w":
+        return value * 7 * 24 * 60;
+      default:
+        return 15;
+    }
+  }
+
+  private edgeTimeframeScale(timeframeMinutes: number): number {
+    const baselineMinutes = 15;
+    const rawScale = Math.sqrt(Math.max(1, timeframeMinutes) / baselineMinutes);
+    return Math.min(2, Math.max(0.2, rawScale));
+  }
+
+  private warnIfHistoryStale(symbol: SupportedSymbol, timeframe: string, lastTs: number, nowTs: number): void {
+    if (!Number.isFinite(lastTs) || lastTs <= 0) {
+      logger.warn({ event: "history_missing", symbol, timeframe });
+      return;
+    }
+
+    const timeframeMs = this.timeframeToMinutes(timeframe) * 60_000;
+    const ageMs = Math.max(0, nowTs - lastTs);
+    if (ageMs > timeframeMs * 3) {
+      logger.warn({
+        event: "history_stale",
+        symbol,
+        timeframe,
+        lastCandleTs: lastTs,
+        ageMs,
+        thresholdMs: timeframeMs * 3
+      });
+    }
+  }
+
+  private warnIfMinNotionalConstraints(equityUsdt: number): void {
+    if (this.state.minNotionalFeasibilityWarned) return;
+    if (equityUsdt <= 0) return;
+
+    const maxSymbolNotional = equityUsdt * this.cfg.maxExposurePerSymbol;
+    if (maxSymbolNotional + 1e-9 >= this.cfg.minNotionalUsdt) return;
+
+    this.state.minNotionalFeasibilityWarned = true;
+    logger.warn({
+      event: "min_notional_configuration_warning",
+      equityUsdt,
+      maxExposurePerSymbol: this.cfg.maxExposurePerSymbol,
+      minNotionalUsdt: this.cfg.minNotionalUsdt,
+      computedMaxSymbolNotionalUsdt: maxSymbolNotional,
+      recommendation: "Increase ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL or equity, or reduce MIN_NOTIONAL_USDT."
+    });
   }
 }

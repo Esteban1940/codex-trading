@@ -74,6 +74,8 @@ const bot = new BinanceSpotBot(
   {
     symbols: parseSymbols(config.SYMBOLS),
     timeframes: parseTimeframes(config.TIMEFRAMES),
+    maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
+    minNotionalUsdt: config.MIN_NOTIONAL_USDT,
     feeBps: config.DEFAULT_FEE_BPS,
     slippageBps: config.DEFAULT_SLIPPAGE_BPS,
     paperSpreadBps: config.PAPER_SPREAD_BPS,

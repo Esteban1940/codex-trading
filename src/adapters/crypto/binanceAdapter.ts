@@ -85,6 +85,29 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function timeframeToMs(timeframe: string): number {
+  const value = timeframe.trim().toLowerCase();
+  const match = value.match(/^(\d+)([mhdw])$/);
+  if (!match) return 15 * 60 * 1000;
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+  if (!Number.isFinite(amount) || amount <= 0) return 15 * 60 * 1000;
+
+  switch (unit) {
+    case "m":
+      return amount * 60 * 1000;
+    case "h":
+      return amount * 60 * 60 * 1000;
+    case "d":
+      return amount * 24 * 60 * 60 * 1000;
+    case "w":
+      return amount * 7 * 24 * 60 * 60 * 1000;
+    default:
+      return 15 * 60 * 1000;
+  }
+}
+
 function extractBinanceCode(error: unknown): number | undefined {
   if (typeof error === "object" && error !== null && "code" in error) {
     const raw = (error as { code?: unknown }).code;
@@ -410,11 +433,26 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   async getHistory(symbol: string, from: Date, to: Date, timeframe: string): Promise<Candle[]> {
     await this.ensureInit();
-    const data = asOhlcvRows(
-      await this.callExchange("fetchOHLCV", () => this.exchange.fetchOHLCV(symbol, timeframe, from.getTime()))
+    const toTs = to.getTime();
+    const fromTs = from.getTime();
+    const timeframeMs = timeframeToMs(timeframe);
+
+    // Always anchor near "now/to" to avoid stale windows when long "from" ranges are passed.
+    const requestedBars = Math.ceil(Math.max(0, toTs - fromTs) / timeframeMs) + 10;
+    const minBars = 160;
+    const maxBars = 1000;
+    const limit = Math.min(maxBars, Math.max(minBars, requestedBars));
+    const since = Math.max(0, toTs - limit * timeframeMs);
+
+    let data = asOhlcvRows(
+      await this.callExchange("fetchOHLCV", () => this.exchange.fetchOHLCV(symbol, timeframe, since, limit))
     );
+    if (data.length === 0) {
+      data = asOhlcvRows(await this.callExchange("fetchOHLCV", () => this.exchange.fetchOHLCV(symbol, timeframe)));
+    }
+
     return data
-      .filter((row: OhlcvRow) => row[0] <= to.getTime())
+      .filter((row: OhlcvRow) => row[0] >= fromTs && row[0] <= toTs)
       .map((row: OhlcvRow) => ({
         ts: row[0],
         open: row[1],

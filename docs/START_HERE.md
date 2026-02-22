@@ -35,6 +35,12 @@ pnpm install
 pnpm dev:paper --cycles 30 --interval-ms 3000
 ```
 
+If you want faster validation of entries/exits in short runs, use:
+
+```bash
+pnpm dev:paper --real-adapter --paper-profile moderate --cycles 30 --interval-ms 15000
+```
+
 Recommended for your current size:
 
 ```env
@@ -78,11 +84,15 @@ RISK_MAX_DAILY_LOSS_PCT=2
 RISK_MAX_DRAWDOWN_PCT=6
 RISK_MAX_TRADES_PER_DAY=2
 
-ALLOCATOR_MAX_EXPOSURE_TOTAL=0.2
-ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL=0.1
+ALLOCATOR_MAX_EXPOSURE_TOTAL=0.3
+ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL=0.15
 MAX_NOTIONAL_PER_SYMBOL_USD=20
 MAX_NOTIONAL_PER_MARKET_USD=40
 ```
+
+For small balances, ensure this is true so orders are not blocked by min notional:
+
+`ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equityUsdt >= MIN_NOTIONAL_USDT`
 
 Then run:
 

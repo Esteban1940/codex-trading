@@ -44,13 +44,29 @@ Where:
 - `observedEdgePct` is ATR% on the fast timeframe.
 - `requiredEdgePct` is derived from round-trip cost:
   - `roundTripCostPct = (2 * feeBps + spreadBps) / 100`
-  - `requiredEdgePctRaw = roundTripCostPct * SIGNAL_MIN_EDGE_MULTIPLIER`
+  - `requiredEdgePctRaw = roundTripCostPct * SIGNAL_MIN_EDGE_MULTIPLIER * timeframeScale`
+  - `timeframeScale = clamp(sqrt(fastTfMinutes / 15), 0.2, 2.0)`
   - optional cap: `requiredEdgePct = min(requiredEdgePctRaw, SIGNAL_EDGE_PCT_CAP)` if cap > 0
 
 Logs include:
 - `passScore`, `passEdge`
-- `observedEdgePct`, `requiredEdgePct`, `edgeBufferPct`
+- `observedEdgePct`, `requiredEdgePct`, `edgeBufferPct`, `timeframeMinutes`, `timeframeScale`
 - suppression reason: `insufficient_score` or `insufficient_edge`
+
+### Paper profiles
+
+- `default`: uses `.env` values as-is.
+- `moderate`: applies temporary runtime overrides for short paper runs:
+  - `SIGNAL_MIN_ENTRY_SCORE <= 0.20`
+  - `SIGNAL_MIN_EDGE_MULTIPLIER <= 1.2`
+  - `SIGNAL_EDGE_PCT_CAP <= 0.35`
+  - `ALLOCATOR_MIN_SCORE_TO_INVEST <= 0.10`
+  - `MIN_HOLD_MINUTES <= 30`
+
+Use:
+```bash
+pnpm dev:paper --real-adapter --paper-profile moderate --cycles 30 --interval-ms 15000
+```
 
 ## Returning to USDT (InventoryManager)
 
@@ -58,6 +74,12 @@ Portfolio is handled as:
 - `USDT`
 - `BTC`
 - `ETH`
+
+If equity is too small for configured exposure, bot logs:
+- `min_notional_configuration_warning`
+
+Condition:
+- `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equityUsdt < MIN_NOTIONAL_USDT`
 
 On bearish/exit signal:
 - It sells **only free available inventory** for that symbol.

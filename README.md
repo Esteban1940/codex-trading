@@ -120,3 +120,4 @@ If runtime returns Binance `-2015`:
 
 - The Binance adapter now fetches the most recent OHLCV window each cycle (avoids stale candle windows).
 - Entry edge gating scales by fast timeframe so `1m/5m` tests are not blocked by a `15m`-sized threshold.
+- Entry edge now uses expected hold horizon (`ATR * sqrt(holdingBars)`) instead of single-bar ATR only.

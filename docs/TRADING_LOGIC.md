@@ -27,6 +27,11 @@ Per symbol (`BTC/USDT`, `ETH/USDT`) it combines:
 - Volatility: ATR% + returns volatility filter.
 - Cooldown: minimum time between trades per symbol.
 
+The regime is now graded (not only strict fast/slow cross):
+- `regimeScore` from weighted fast/slow EMA spreads.
+- `momentumScore` from RSI+ROC normalized components.
+- `score` combines regime and momentum with volatility penalty.
+
 Decision outputs:
 - `enter`: bullish regime + momentum score above threshold and cooldown inactive.
 - `exit`: bearish regime or momentum breakdown.
@@ -41,7 +46,9 @@ An `enter` still needs to pass:
 - `observedEdgePct >= requiredEdgePct`
 
 Where:
-- `observedEdgePct` is ATR% on the fast timeframe.
+- `observedEdgePct` is ATR% projected to expected hold horizon:
+  - `observedEdgePct = atrPct * sqrt(holdingBars)`
+  - `holdingBars = max(1, MIN_HOLD_MINUTES / fastTfMinutes)`
 - `requiredEdgePct` is derived from round-trip cost:
   - `roundTripCostPct = (2 * feeBps + spreadBps) / 100`
   - `requiredEdgePctRaw = roundTripCostPct * SIGNAL_MIN_EDGE_MULTIPLIER * timeframeScale`
@@ -50,18 +57,19 @@ Where:
 
 Logs include:
 - `passScore`, `passEdge`
-- `observedEdgePct`, `requiredEdgePct`, `edgeBufferPct`, `timeframeMinutes`, `timeframeScale`
+- `observedEdgePct`, `observedSingleBarEdgePct`, `holdingBars`
+- `requiredEdgePct`, `edgeBufferPct`, `timeframeMinutes`, `timeframeScale`
 - suppression reason: `insufficient_score` or `insufficient_edge`
 
 ### Paper profiles
 
 - `default`: uses `.env` values as-is.
 - `moderate`: applies temporary runtime overrides for short paper runs:
-  - `SIGNAL_MIN_ENTRY_SCORE <= 0.20`
-  - `SIGNAL_MIN_EDGE_MULTIPLIER <= 1.2`
-  - `SIGNAL_EDGE_PCT_CAP <= 0.35`
-  - `ALLOCATOR_MIN_SCORE_TO_INVEST <= 0.10`
-  - `MIN_HOLD_MINUTES <= 30`
+- `SIGNAL_MIN_ENTRY_SCORE <= 0.20`
+- `SIGNAL_MIN_EDGE_MULTIPLIER <= 1.2`
+- `SIGNAL_EDGE_PCT_CAP <= 0.25`
+- `ALLOCATOR_MIN_SCORE_TO_INVEST <= 0.10`
+- `MIN_HOLD_MINUTES <= 30`
 
 Use:
 ```bash
@@ -85,6 +93,9 @@ On bearish/exit signal:
 - It sells **only free available inventory** for that symbol.
 - It never attempts to short.
 - It applies fee-aware safe quantity.
+
+If `MIN_HOLD_MINUTES` is active, exits are suppressed unless a strong-exit condition is met
+(`regimeScore <= -0.55` or `momentumScore <= -0.6`).
 
 On risk event with `LIQUIDATE_ON_RISK=true`:
 - It liquidates BTC and ETH to USDT (market by default for risk exits).
@@ -112,7 +123,8 @@ Checks include:
 
 When violated:
 - Trading is blocked.
-- If enabled, liquidation to USDT is forced.
+- If enabled, liquidation to USDT is forced for severe breaches (kill switch, daily loss, drawdown, ATR breaker).
+- `max trades per day` blocks new entries but does not auto-liquidate by itself.
 
 ## Execution behavior
 

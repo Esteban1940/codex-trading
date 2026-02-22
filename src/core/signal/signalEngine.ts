@@ -1,4 +1,4 @@
-﻿import type { Candle } from "../domain/types.js";
+import type { Candle } from "../domain/types.js";
 import { atr, ema, roc, rsi, std } from "./indicators.js";
 
 export interface SignalEngineConfig {
@@ -9,6 +9,16 @@ export interface SignalEngineConfig {
   atrPeriod: number;
   maxVolatilityPct: number;
   cooldownMinutes: number;
+  trendFastWeight?: number;
+  trendSlowWeight?: number;
+  trendFastScalePct?: number;
+  trendSlowScalePct?: number;
+  regimeEntryMin?: number;
+  regimeExitMax?: number;
+  exitMomentumMax?: number;
+  actionEntryScoreMin?: number;
+  scoreTrendWeight?: number;
+  scoreMomentumWeight?: number;
 }
 
 export interface SignalFeatures {
@@ -21,6 +31,10 @@ export interface SignalFeatures {
   atr: number;
   atrPct: number;
   volatilityPct: number;
+  volatilityPenalty: number;
+  trendFastPct: number;
+  trendSlowPct: number;
+  regimeScore: number;
   trendRegime: "bullish" | "bearish" | "neutral";
   momentumScore: number;
 }
@@ -34,8 +48,51 @@ export interface SymbolSignal {
   features: SignalFeatures;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizePair(a: number, b: number, fallbackA: number, fallbackB: number): [number, number] {
+  const aa = Number.isFinite(a) && a > 0 ? a : 0;
+  const bb = Number.isFinite(b) && b > 0 ? b : 0;
+  const sum = aa + bb;
+  if (sum > 0) return [aa / sum, bb / sum];
+
+  const fallbackSum = fallbackA + fallbackB;
+  return [fallbackA / fallbackSum, fallbackB / fallbackSum];
+}
+
 export class SignalEngine {
-  constructor(private readonly cfg: SignalEngineConfig) {}
+  private readonly cfg: Required<SignalEngineConfig>;
+
+  constructor(cfg: SignalEngineConfig) {
+    const [trendFastWeight, trendSlowWeight] = normalizePair(
+      cfg.trendFastWeight ?? 0.4,
+      cfg.trendSlowWeight ?? 0.6,
+      0.4,
+      0.6
+    );
+    const [scoreTrendWeight, scoreMomentumWeight] = normalizePair(
+      cfg.scoreTrendWeight ?? 0.7,
+      cfg.scoreMomentumWeight ?? 0.3,
+      0.7,
+      0.3
+    );
+
+    this.cfg = {
+      ...cfg,
+      trendFastWeight,
+      trendSlowWeight,
+      trendFastScalePct: cfg.trendFastScalePct ?? 0.25,
+      trendSlowScalePct: cfg.trendSlowScalePct ?? 0.35,
+      regimeEntryMin: cfg.regimeEntryMin ?? 0.15,
+      regimeExitMax: cfg.regimeExitMax ?? -0.25,
+      exitMomentumMax: cfg.exitMomentumMax ?? -0.3,
+      actionEntryScoreMin: cfg.actionEntryScoreMin ?? 0.15,
+      scoreTrendWeight,
+      scoreMomentumWeight
+    };
+  }
 
   evaluate(params: {
     symbol: string;
@@ -66,15 +123,31 @@ export class SignalEngine {
     });
     const volatilityPct = std(returns, Math.min(20, returns.length || 1));
 
-    const mtfBull = emaFast15 > emaSlow15 && emaFast1h > emaSlow1h;
-    const mtfBear = emaFast15 < emaSlow15 && emaFast1h < emaSlow1h;
+    const trendFastPct = emaSlow15 > 0 ? ((emaFast15 - emaSlow15) / emaSlow15) * 100 : 0;
+    const trendSlowPct = emaSlow1h > 0 ? ((emaFast1h - emaSlow1h) / emaSlow1h) * 100 : 0;
+    const trendFastNorm = clamp(trendFastPct / this.cfg.trendFastScalePct, -1, 1);
+    const trendSlowNorm = clamp(trendSlowPct / this.cfg.trendSlowScalePct, -1, 1);
+    const regimeScore = clamp(
+      this.cfg.trendFastWeight * trendFastNorm + this.cfg.trendSlowWeight * trendSlowNorm,
+      -1,
+      1
+    );
+
+    const rsiComponent = clamp((rsiV - 50) / 20, -1, 1);
+    const rocComponent = clamp(rocV / 0.6, -1, 1);
+    const momentumScore = clamp(rsiComponent * 0.65 + rocComponent * 0.35, -1, 1);
+
+    const volatilityPenalty =
+      this.cfg.maxVolatilityPct <= 0
+        ? 0
+        : clamp((volatilityPct - this.cfg.maxVolatilityPct) / this.cfg.maxVolatilityPct, 0, 1);
 
     let trendRegime: SignalFeatures["trendRegime"] = "neutral";
-    if (mtfBull && volatilityPct <= this.cfg.maxVolatilityPct) trendRegime = "bullish";
-    if (mtfBear) trendRegime = "bearish";
+    if (regimeScore >= this.cfg.regimeEntryMin && volatilityPenalty < 1) trendRegime = "bullish";
+    if (regimeScore <= this.cfg.regimeExitMax) trendRegime = "bearish";
 
-    const momentumScore = Math.max(-1, Math.min(1, (rsiV - 50) / 50 + rocV / 10));
-    const score = trendRegime === "bullish" ? Math.max(0, momentumScore) : 0;
+    const rawScore = this.cfg.scoreTrendWeight * regimeScore + this.cfg.scoreMomentumWeight * momentumScore;
+    const score = clamp(Math.max(0, rawScore) * (1 - 0.5 * volatilityPenalty), 0, 1);
 
     const cooldownMs = this.cfg.cooldownMinutes * 60_000;
     const cooldownActive = params.lastTradeTs !== undefined && params.nowTs - params.lastTradeTs < cooldownMs;
@@ -82,12 +155,17 @@ export class SignalEngine {
     let action: SymbolSignal["action"] = "hold";
     let reason = "No actionable setup";
 
-    if (trendRegime === "bearish" || momentumScore < -0.15) {
+    if (trendRegime === "bearish") {
       action = "exit";
-      reason = "Bearish regime or momentum breakdown";
-    } else if (trendRegime === "bullish" && score >= 0.15) {
+      reason = "Bearish regime";
+    } else if (momentumScore <= this.cfg.exitMomentumMax) {
+      action = "exit";
+      reason = "Momentum breakdown";
+    } else if (regimeScore >= this.cfg.regimeEntryMin && score >= this.cfg.actionEntryScoreMin) {
       action = cooldownActive ? "hold" : "enter";
-      reason = cooldownActive ? "Cooldown active" : "Bullish MTF regime with positive momentum";
+      reason = cooldownActive ? "Cooldown active" : "Regime and momentum support entry";
+    } else if (score > 0) {
+      reason = "Setup below entry threshold";
     }
 
     return {
@@ -99,13 +177,17 @@ export class SignalEngine {
       features: {
         emaFast15m: emaFast15,
         emaSlow15m: emaSlow15,
-        emaFast1h: emaFast1h,
-        emaSlow1h: emaSlow1h,
+        emaFast1h,
+        emaSlow1h,
         rsi: rsiV,
         roc: rocV,
         atr: atrV,
         atrPct,
         volatilityPct,
+        volatilityPenalty,
+        trendFastPct,
+        trendSlowPct,
+        regimeScore,
         trendRegime,
         momentumScore
       }

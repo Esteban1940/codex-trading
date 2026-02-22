@@ -78,7 +78,12 @@ type SignalSummary = {
   action: "enter" | "exit" | "hold";
   cooldownActive: boolean;
   score: number;
-  features: { atrPct: number; trendRegime: "bullish" | "bearish" | "neutral"; momentumScore: number };
+  features: {
+    atrPct: number;
+    trendRegime: "bullish" | "bearish" | "neutral";
+    momentumScore: number;
+    regimeScore?: number;
+  };
 };
 
 interface EntryGate {
@@ -89,7 +94,9 @@ interface EntryGate {
   minScore: number;
   timeframeMinutes: number;
   timeframeScale: number;
+  holdingBars: number;
   observedEdgePct: number;
+  observedSingleBarEdgePct: number;
   edgeBufferPct: number;
   roundTripCostPct: number;
   rawRequiredEdgePct: number;
@@ -219,7 +226,7 @@ export class BinanceSpotBot {
     for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
       if (signals[symbol].action !== "exit") continue;
       const strongExit =
-        signals[symbol].features.trendRegime === "bearish" || signals[symbol].features.momentumScore <= -0.45;
+        (signals[symbol].features.regimeScore ?? 0) <= -0.55 || signals[symbol].features.momentumScore <= -0.6;
       if (minHoldProtected.has(symbol) && !strongExit) {
         exitSuppressed.push({ symbol, reason: "min_hold_active_without_strong_exit" });
         continue;
@@ -584,10 +591,12 @@ export class BinanceSpotBot {
 
   private evaluateEntryGate(signal: SignalSummary, fastTimeframe: string): EntryGate {
     const passScore = signal.score >= this.cfg.minEntryScore;
-    const observedEdgePct = signal.features.atrPct;
+    const observedSingleBarEdgePct = signal.features.atrPct;
     const roundTripCostPct = (2 * this.cfg.feeBps + this.cfg.paperSpreadBps) / 100;
     const timeframeMinutes = this.timeframeToMinutes(fastTimeframe);
     const timeframeScale = this.edgeTimeframeScale(timeframeMinutes);
+    const holdingBars = Math.max(1, this.cfg.minHoldMinutes / Math.max(1, timeframeMinutes));
+    const observedEdgePct = observedSingleBarEdgePct * Math.sqrt(holdingBars);
     const rawRequiredEdgePct = roundTripCostPct * this.cfg.minEdgeMultiplier * timeframeScale;
     const requiredEdgePct =
       this.cfg.edgePctCap > 0 ? Math.min(rawRequiredEdgePct, this.cfg.edgePctCap) : rawRequiredEdgePct;
@@ -601,7 +610,9 @@ export class BinanceSpotBot {
       minScore: this.cfg.minEntryScore,
       timeframeMinutes,
       timeframeScale,
+      holdingBars,
       observedEdgePct,
+      observedSingleBarEdgePct,
       edgeBufferPct,
       roundTripCostPct,
       rawRequiredEdgePct,

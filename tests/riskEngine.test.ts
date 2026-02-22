@@ -59,4 +59,65 @@ describe("RiskEngine portfolio triggers", () => {
     expect(result.forceLiquidate).toBe(true);
     expect(result.reasons.join(" ")).toMatch(/kill switch/i);
   });
+
+  it("does not force liquidation when only max trades per day is reached", () => {
+    const engine = new RiskEngine(base);
+    const result = engine.evaluatePortfolio({
+      equityUsdt: 1000,
+      dayStartEquityUsdt: 1000,
+      peakEquityUsdt: 1000,
+      tradesToday: 20,
+      atrPct: 1
+    });
+
+    expect(result.allowTrading).toBe(false);
+    expect(result.forceLiquidate).toBe(false);
+    expect(result.reasons.join(" ")).toMatch(/max trades/i);
+  });
+
+  it("allows risk-reducing sell even when kill switch and limits are breached", () => {
+    const engine = new RiskEngine({ ...base, killSwitch: true });
+    expect(() =>
+      engine.evaluateOrder(
+        {
+          symbol: "BTC/USDT",
+          side: "sell",
+          type: "market",
+          quantity: 0.01,
+          clientOrderId: "sell-risk-reduce"
+        },
+        68000,
+        [{ symbol: "BTC/USDT", quantity: 0.01, avgPrice: 67000, market: "crypto", assetClass: "crypto" }],
+        {
+          dayLossUsd: 500,
+          drawdownPct: 20,
+          openPositions: 5,
+          marketExposureUsd: { iol: 0, crypto: 5000 }
+        }
+      )
+    ).not.toThrow();
+  });
+
+  it("still blocks buy when market notional would exceed limits", () => {
+    const engine = new RiskEngine(base);
+    expect(() =>
+      engine.evaluateOrder(
+        {
+          symbol: "ETH/USDT",
+          side: "buy",
+          type: "market",
+          quantity: 1,
+          clientOrderId: "buy-too-large"
+        },
+        3000,
+        [],
+        {
+          dayLossUsd: 0,
+          drawdownPct: 0,
+          openPositions: 0,
+          marketExposureUsd: { iol: 0, crypto: 500 }
+        }
+      )
+    ).toThrow(/Max symbol notional|Max market notional/);
+  });
 });

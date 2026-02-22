@@ -64,7 +64,17 @@ function buildSignalEngine(): SignalEngine {
     rocPeriod: config.SIGNAL_ROC_PERIOD,
     atrPeriod: config.SIGNAL_ATR_PERIOD,
     maxVolatilityPct: config.SIGNAL_MAX_VOLATILITY_PCT,
-    cooldownMinutes: config.SIGNAL_COOLDOWN_MINUTES
+    cooldownMinutes: config.SIGNAL_COOLDOWN_MINUTES,
+    trendFastWeight: config.SIGNAL_TREND_FAST_WEIGHT,
+    trendSlowWeight: config.SIGNAL_TREND_SLOW_WEIGHT,
+    trendFastScalePct: config.SIGNAL_TREND_FAST_SCALE_PCT,
+    trendSlowScalePct: config.SIGNAL_TREND_SLOW_SCALE_PCT,
+    regimeEntryMin: config.SIGNAL_REGIME_ENTRY_MIN,
+    regimeExitMax: config.SIGNAL_REGIME_EXIT_MAX,
+    exitMomentumMax: config.SIGNAL_EXIT_MOMENTUM_MAX,
+    actionEntryScoreMin: config.SIGNAL_ACTION_ENTRY_SCORE_MIN,
+    scoreTrendWeight: config.SIGNAL_SCORE_TREND_WEIGHT,
+    scoreMomentumWeight: config.SIGNAL_SCORE_MOMENTUM_WEIGHT
   });
 }
 
@@ -147,7 +157,7 @@ function resolvePaperProfile(raw: string): RuntimeOverrides {
       profileName: "moderate",
       minEntryScore: Math.min(config.SIGNAL_MIN_ENTRY_SCORE, 0.2),
       minEdgeMultiplier: Math.min(config.SIGNAL_MIN_EDGE_MULTIPLIER, 1.2),
-      edgePctCap: config.SIGNAL_EDGE_PCT_CAP > 0 ? Math.min(config.SIGNAL_EDGE_PCT_CAP, 0.35) : 0.35,
+      edgePctCap: config.SIGNAL_EDGE_PCT_CAP > 0 ? Math.min(config.SIGNAL_EDGE_PCT_CAP, 0.25) : 0.25,
       allocatorMinScoreToInvest: Math.min(config.ALLOCATOR_MIN_SCORE_TO_INVEST, 0.1),
       minHoldMinutes: Math.min(config.MIN_HOLD_MINUTES, 30),
       paperSpreadBps: config.PAPER_SPREAD_BPS
@@ -168,6 +178,10 @@ function logEffectiveRuntimeConfig(mode: "paper" | "live", overrides?: RuntimeOv
     signalMinEntryScore: overrides?.minEntryScore ?? config.SIGNAL_MIN_ENTRY_SCORE,
     signalMinEdgeMultiplier: overrides?.minEdgeMultiplier ?? config.SIGNAL_MIN_EDGE_MULTIPLIER,
     signalEdgePctCap: overrides?.edgePctCap ?? config.SIGNAL_EDGE_PCT_CAP,
+    signalRegimeEntryMin: config.SIGNAL_REGIME_ENTRY_MIN,
+    signalRegimeExitMax: config.SIGNAL_REGIME_EXIT_MAX,
+    signalExitMomentumMax: config.SIGNAL_EXIT_MOMENTUM_MAX,
+    signalActionEntryScoreMin: config.SIGNAL_ACTION_ENTRY_SCORE_MIN,
     allocatorMinScoreToInvest: overrides?.allocatorMinScoreToInvest ?? config.ALLOCATOR_MIN_SCORE_TO_INVEST,
     minHoldMinutes: overrides?.minHoldMinutes ?? config.MIN_HOLD_MINUTES,
     minNotionalUsdt: config.MIN_NOTIONAL_USDT,

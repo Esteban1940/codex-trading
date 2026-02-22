@@ -120,4 +120,32 @@ describe("RiskEngine portfolio triggers", () => {
       )
     ).toThrow(/Max symbol notional|Max market notional/);
   });
+
+  it("does not apply symbol/market notional caps to risk-reducing sells", () => {
+    const engine = new RiskEngine({
+      ...base,
+      maxNotionalPerSymbolUsd: 100,
+      maxNotionalPerMarketUsd: 100
+    });
+
+    expect(() =>
+      engine.evaluateOrder(
+        {
+          symbol: "BTC/USDT",
+          side: "sell",
+          type: "market",
+          quantity: 0.05,
+          clientOrderId: "sell-notional-cap-bypass"
+        },
+        68_000,
+        [{ symbol: "BTC/USDT", quantity: 0.05, avgPrice: 67_000, market: "crypto", assetClass: "crypto" }],
+        {
+          dayLossUsd: 500,
+          drawdownPct: 20,
+          openPositions: 5,
+          marketExposureUsd: { iol: 0, crypto: 10_000 }
+        }
+      )
+    ).not.toThrow();
+  });
 });

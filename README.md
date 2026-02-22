@@ -41,14 +41,14 @@ Paper (single cycle, mock):
 pnpm dev:paper
 ```
 
-Paper with Binance adapter:
+Paper with Binance adapter (real data path):
 ```bash
-pnpm dev:paper --real-adapter --cycles 3 --interval-ms 60000
+pnpm dev:paper --real-adapter --profile production-conservative --cycles 3 --interval-ms 60000
 ```
 
-Paper with moderate short-run calibration (recommended to validate entries/exits quickly):
+Paper sim with real Binance data and local ledger (no live orders):
 ```bash
-pnpm dev:paper --real-adapter --paper-profile moderate --cycles 30 --interval-ms 15000
+pnpm dev:paper --paper-sim-real-data --profile paper-validation --cycles 30 --interval-ms 60000
 ```
 
 Paper with calibrated short-run:
@@ -59,7 +59,7 @@ pnpm dev:paper --cycles 30 --interval-ms 3000
 Read-only smoke test with real adapter:
 ```bash
 # .env: READ_ONLY_MODE=true, LIVE_TRADING=false
-pnpm dev:paper --real-adapter --cycles 10 --interval-ms 60000
+pnpm dev:paper --real-adapter --profile production-conservative --cycles 10 --interval-ms 60000
 ```
 
 Autonomous loop worker:
@@ -78,7 +78,7 @@ Live (blocked by default):
 LIVE_TRADING=true
 WORKER_REAL_ADAPTER=true
 
-pnpm dev:live --cycles 0 --interval-ms 60000
+pnpm dev:live --profile production-conservative --cycles 0 --interval-ms 60000
 ```
 
 ## Metrics
@@ -93,6 +93,7 @@ Paper/backtest report:
 - total fees
 - time in position vs time in USDT
 - trades by symbol
+- no-trade reason counters by symbol
 
 ## Tests and checks
 

@@ -19,8 +19,18 @@ interface BotConfig {
   paperSpreadBps: number;
   minHoldMinutes: number;
   minEntryScore: number;
+  initialRegimeEntryMin: number;
+  initialActionEntryScoreMin: number;
   minEdgeMultiplier: number;
   edgePctCap: number;
+  evalOnFastCandleCloseOnly: boolean;
+  starvationFastCandlesNoEntry: number;
+  starvationStepMinEntryScore: number;
+  starvationStepActionEntryScoreMin: number;
+  starvationStepRegimeEntryMin: number;
+  starvationFloorMinEntryScore: number;
+  starvationFloorActionEntryScoreMin: number;
+  starvationFloorRegimeEntryMin: number;
   entryOrderType: "market" | "limit";
   entryLimitOffsetBps: number;
   entryLimitTimeoutMs: number;
@@ -41,6 +51,7 @@ export interface BotReport {
   timeInUsdtPct: number;
   tradesBySymbol: Record<SupportedSymbol, number>;
   totalTrades: number;
+  noTradeReasonCounts: Record<SupportedSymbol, NoTradeReasonCounts>;
 }
 
 interface RuntimeState {
@@ -66,6 +77,15 @@ interface RuntimeState {
   timeInUsdtMs: number;
   lastEquityUsdt: number;
   minNotionalFeasibilityWarned: boolean;
+  lastFastCandleTs: Partial<Record<SupportedSymbol, number>>;
+  fastCandlesWithoutEntry: number;
+  starvationLevelApplied: number;
+  dynamicThresholds: {
+    minEntryScore: number;
+    actionEntryScoreMin: number;
+    regimeEntryMin: number;
+  };
+  noTradeReasonCounts: Record<SupportedSymbol, NoTradeReasonCounts>;
 }
 
 interface QuoteSnapshot {
@@ -101,6 +121,87 @@ interface EntryGate {
   roundTripCostPct: number;
   rawRequiredEdgePct: number;
   requiredEdgePct: number;
+}
+
+type NoTradeReason =
+  | "regime_neutral"
+  | "insufficient_score"
+  | "insufficient_edge"
+  | "allocator_threshold"
+  | "cooldown"
+  | "min_hold"
+  | "risk_block";
+
+type NoTradeReasonCounts = Record<NoTradeReason, number>;
+
+function emptyNoTradeReasonCounts(): NoTradeReasonCounts {
+  return {
+    regime_neutral: 0,
+    insufficient_score: 0,
+    insufficient_edge: 0,
+    allocator_threshold: 0,
+    cooldown: 0,
+    min_hold: 0,
+    risk_block: 0
+  };
+}
+
+interface StarvationThresholdInput {
+  base: {
+    minEntryScore: number;
+    actionEntryScoreMin: number;
+    regimeEntryMin: number;
+  };
+  floor: {
+    minEntryScore: number;
+    actionEntryScoreMin: number;
+    regimeEntryMin: number;
+  };
+  step: {
+    minEntryScore: number;
+    actionEntryScoreMin: number;
+    regimeEntryMin: number;
+  };
+  fastCandlesWithoutEntry: number;
+  starvationFastCandlesNoEntry: number;
+}
+
+interface StarvationThresholdOutput {
+  level: number;
+  thresholds: {
+    minEntryScore: number;
+    actionEntryScoreMin: number;
+    regimeEntryMin: number;
+  };
+}
+
+export function computeStarvationAdjustedThresholds(input: StarvationThresholdInput): StarvationThresholdOutput {
+  if (input.starvationFastCandlesNoEntry <= 0) {
+    return {
+      level: 0,
+      thresholds: { ...input.base }
+    };
+  }
+
+  const level = Math.max(0, Math.floor(input.fastCandlesWithoutEntry / input.starvationFastCandlesNoEntry));
+  if (level === 0) {
+    return {
+      level: 0,
+      thresholds: { ...input.base }
+    };
+  }
+
+  return {
+    level,
+    thresholds: {
+      minEntryScore: Math.max(input.floor.minEntryScore, input.base.minEntryScore - level * input.step.minEntryScore),
+      actionEntryScoreMin: Math.max(
+        input.floor.actionEntryScoreMin,
+        input.base.actionEntryScoreMin - level * input.step.actionEntryScoreMin
+      ),
+      regimeEntryMin: Math.max(input.floor.regimeEntryMin, input.base.regimeEntryMin - level * input.step.regimeEntryMin)
+    }
+  };
 }
 
 function toHoldings(balances: Record<string, number>): Holdings {
@@ -147,7 +248,19 @@ export class BinanceSpotBot {
       timeInPositionMs: 0,
       timeInUsdtMs: 0,
       lastEquityUsdt: 0,
-      minNotionalFeasibilityWarned: false
+      minNotionalFeasibilityWarned: false,
+      lastFastCandleTs: {},
+      fastCandlesWithoutEntry: 0,
+      starvationLevelApplied: 0,
+      dynamicThresholds: {
+        minEntryScore: this.cfg.minEntryScore,
+        actionEntryScoreMin: this.cfg.initialActionEntryScoreMin,
+        regimeEntryMin: this.cfg.initialRegimeEntryMin
+      },
+      noTradeReasonCounts: {
+        "BTC/USDT": emptyNoTradeReasonCounts(),
+        "ETH/USDT": emptyNoTradeReasonCounts()
+      }
     };
   }
 
@@ -191,24 +304,76 @@ export class BinanceSpotBot {
     this.warnIfHistoryStale("ETH/USDT", tfFast, histories[2]?.[histories[2].length - 1]?.ts ?? 0, now);
     this.warnIfHistoryStale("ETH/USDT", tfSlow, histories[3]?.[histories[3].length - 1]?.ts ?? 0, now);
 
+    const latestFastCandleTs: Record<SupportedSymbol, number> = {
+      "BTC/USDT": histories[0]?.[histories[0].length - 1]?.ts ?? 0,
+      "ETH/USDT": histories[2]?.[histories[2].length - 1]?.ts ?? 0
+    };
+    const hasNewFastCandle = this.hasNewFastCandle(latestFastCandleTs);
+
+    if (this.cfg.evalOnFastCandleCloseOnly && !hasNewFastCandle) {
+      logger.info({
+        event: "cycle_skipped_no_new_candle",
+        timeframe: tfFast,
+        latestFastCandleTs,
+        previousFastCandleTs: this.state.lastFastCandleTs
+      });
+      this.updatePerformance(equityBefore);
+      logger.info({
+        event: "cycle_state",
+        balances: {
+          usdtFree: holdingsBefore.USDT,
+          btcFree: holdingsBefore.BTC,
+          ethFree: holdingsBefore.ETH
+        },
+        prices: lastPricesBefore,
+        equityUsdt: equityBefore,
+        feesPaidUsdt: this.state.feesPaidUsdt
+      });
+      return;
+    }
+
+    this.state.lastFastCandleTs = latestFastCandleTs;
+    this.applyStarvationAdjustmentIfNeeded();
+
     const signals = {
       "BTC/USDT": this.signalEngine.evaluate({
         symbol: "BTC/USDT",
         candles15m: histories[0] ?? [],
         candles1h: histories[1] ?? [],
         lastTradeTs: this.state.lastTradeTs["BTC/USDT"],
-        nowTs: now
+        nowTs: now,
+        runtimeThresholds: {
+          regimeEntryMin: this.state.dynamicThresholds.regimeEntryMin,
+          actionEntryScoreMin: this.state.dynamicThresholds.actionEntryScoreMin
+        }
       }),
       "ETH/USDT": this.signalEngine.evaluate({
         symbol: "ETH/USDT",
         candles15m: histories[2] ?? [],
         candles1h: histories[3] ?? [],
         lastTradeTs: this.state.lastTradeTs["ETH/USDT"],
-        nowTs: now
+        nowTs: now,
+        runtimeThresholds: {
+          regimeEntryMin: this.state.dynamicThresholds.regimeEntryMin,
+          actionEntryScoreMin: this.state.dynamicThresholds.actionEntryScoreMin
+        }
       })
     };
 
-    logger.info({ event: "signal_decisions", signals: { btc: signals["BTC/USDT"], eth: signals["ETH/USDT"] } });
+    logger.info({
+      event: "signal_decisions",
+      thresholds: this.state.dynamicThresholds,
+      signals: { btc: signals["BTC/USDT"], eth: signals["ETH/USDT"] }
+    });
+
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      if (signals[symbol].features.trendRegime === "neutral") {
+        this.incrementNoTradeReason(symbol, "regime_neutral");
+      }
+      if (signals[symbol].cooldownActive && signals[symbol].action === "hold") {
+        this.incrementNoTradeReason(symbol, "cooldown");
+      }
+    }
 
     const risk = this.riskEngine.evaluatePortfolio({
       equityUsdt: equityBefore,
@@ -217,6 +382,7 @@ export class BinanceSpotBot {
       tradesToday: this.state.tradesToday,
       atrPct: Math.max(signals["BTC/USDT"].features.atrPct, signals["ETH/USDT"].features.atrPct)
     });
+    const allowEntries = risk.allowTrading;
 
     const currentWeights = this.currentWeights(holdingsBefore, quotesBefore, equityBefore);
     const minHoldProtected = this.getMinHoldProtectedSymbols(now, currentWeights);
@@ -228,7 +394,9 @@ export class BinanceSpotBot {
       const strongExit =
         (signals[symbol].features.regimeScore ?? 0) <= -0.55 || signals[symbol].features.momentumScore <= -0.6;
       if (minHoldProtected.has(symbol) && !strongExit) {
-        exitSuppressed.push({ symbol, reason: "min_hold_active_without_strong_exit" });
+        const reason = "min_hold_active_without_strong_exit";
+        exitSuppressed.push({ symbol, reason });
+        this.incrementNoTradeReason(symbol, "min_hold");
         continue;
       }
       exitSymbols.add(symbol);
@@ -242,21 +410,30 @@ export class BinanceSpotBot {
       price?: number;
       reason: string;
     }> = [];
+    let entryAttemptedThisCycle = false;
+    let entryFilledThisCycle = false;
 
     if (risk.forceLiquidate) {
       logger.warn({ event: "risk_liquidation", reasons: risk.reasons });
       orders = this.inventory.planLiquidation(holdingsBefore, lastPricesBefore);
-    } else if (risk.allowTrading) {
+    } else {
+      if (!allowEntries) {
+        for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+          this.incrementNoTradeReason(symbol, "risk_block");
+        }
+      }
+
       const cooldownProtected = this.getCooldownProtectedSymbols(signals, currentWeights);
       const entrySuppressed: Array<{ symbol: SupportedSymbol; reason: string }> = [];
       const entryGate: Record<SupportedSymbol, EntryGate> = {
-        "BTC/USDT": this.evaluateEntryGate(signals["BTC/USDT"], tfFast),
-        "ETH/USDT": this.evaluateEntryGate(signals["ETH/USDT"], tfFast)
+        "BTC/USDT": this.evaluateEntryGate(signals["BTC/USDT"], tfFast, this.state.dynamicThresholds.minEntryScore, allowEntries),
+        "ETH/USDT": this.evaluateEntryGate(signals["ETH/USDT"], tfFast, this.state.dynamicThresholds.minEntryScore, allowEntries)
       };
 
       const allocation = this.allocator.allocate({
         scores: {
           "BTC/USDT":
+            allowEntries &&
             signals["BTC/USDT"].action === "enter" &&
             entryGate["BTC/USDT"].allowed
               ? signals["BTC/USDT"].score
@@ -264,6 +441,7 @@ export class BinanceSpotBot {
                 ? currentWeights["BTC/USDT"]
                 : 0,
           "ETH/USDT":
+            allowEntries &&
             signals["ETH/USDT"].action === "enter" &&
             entryGate["ETH/USDT"].allowed
               ? signals["ETH/USDT"].score
@@ -276,18 +454,39 @@ export class BinanceSpotBot {
 
       for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
         if (signals[symbol].action !== "enter") continue;
+        entryAttemptedThisCycle = true;
         if (!entryGate[symbol].allowed) {
-          const reason = !entryGate[symbol].passScore
-            ? "insufficient_score"
-            : !entryGate[symbol].passEdge
-              ? "insufficient_edge"
-              : "entry_not_allowed";
+          const reason =
+            !allowEntries
+              ? "risk_block"
+              : !entryGate[symbol].passScore
+                ? "insufficient_score"
+                : !entryGate[symbol].passEdge
+                  ? "insufficient_edge"
+                  : "entry_not_allowed";
           entrySuppressed.push({ symbol, reason });
+          if (reason === "insufficient_score") {
+            this.incrementNoTradeReason(symbol, "insufficient_score");
+          }
+          if (reason === "insufficient_edge") {
+            this.incrementNoTradeReason(symbol, "insufficient_edge");
+          }
+          if (reason === "risk_block") {
+            this.incrementNoTradeReason(symbol, "risk_block");
+          }
         }
       }
 
       const adjustedTarget = this.applyCooldownProtection(allocation.weights, currentWeights, cooldownProtected);
       const shouldRebalance = this.allocator.shouldRebalance(currentWeights, adjustedTarget);
+
+      if (allocation.reason.includes("Scores below invest threshold")) {
+        for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+          if (signals[symbol].action === "enter") {
+            this.incrementNoTradeReason(symbol, "allocator_threshold");
+          }
+        }
+      }
 
       logger.info({
         event: "allocation_decision",
@@ -300,6 +499,14 @@ export class BinanceSpotBot {
         entryGate,
         exitSuppressed
       });
+      logger.info({
+        event: "entry_gate_diagnostics",
+        thresholds: this.state.dynamicThresholds,
+        diagnostics: {
+          "BTC/USDT": this.toEntryGateDiagnostic(signals["BTC/USDT"], entryGate["BTC/USDT"], allowEntries),
+          "ETH/USDT": this.toEntryGateDiagnostic(signals["ETH/USDT"], entryGate["ETH/USDT"], allowEntries)
+        }
+      });
 
       if (shouldRebalance || exitSymbols.size > 0) {
         orders = this.inventory.planRebalance({
@@ -311,8 +518,13 @@ export class BinanceSpotBot {
           preferMarketForExit: this.cfg.exitOrderType === "market"
         });
       }
-    } else {
-      logger.warn({ event: "risk_block", reasons: risk.reasons });
+      if (!allowEntries) {
+        logger.warn({
+          event: "risk_block_entries_only",
+          reasons: risk.reasons,
+          note: "entries blocked, exits/reduction still allowed"
+        });
+      }
     }
 
     if (orders.length > 0 && this.cfg.readOnlyMode) {
@@ -388,6 +600,9 @@ export class BinanceSpotBot {
       if (planned.side === "buy" && result.filledQuantity > 0 && !this.state.positionEntryTs[planned.symbol]) {
         this.state.positionEntryTs[planned.symbol] = now;
       }
+      if (planned.side === "buy" && result.filledQuantity > 0) {
+        entryFilledThisCycle = true;
+      }
 
       const filledNotional = fillPrice * Math.max(0, result.filledQuantity);
       projectedExposureCrypto = Math.max(
@@ -406,6 +621,7 @@ export class BinanceSpotBot {
     this.cleanupPositionEntryTs(holdingsAfter, quotesAfter);
 
     this.updatePerformance(equityAfter);
+    this.updateStarvationState(hasNewFastCandle, entryAttemptedThisCycle, entryFilledThisCycle);
 
     logger.info({
       event: "cycle_state",
@@ -462,7 +678,11 @@ export class BinanceSpotBot {
       timeInPositionPct,
       timeInUsdtPct,
       tradesBySymbol: { ...this.state.tradesBySymbol },
-      totalTrades: this.state.totalTrades
+      totalTrades: this.state.totalTrades,
+      noTradeReasonCounts: {
+        "BTC/USDT": { ...this.state.noTradeReasonCounts["BTC/USDT"] },
+        "ETH/USDT": { ...this.state.noTradeReasonCounts["ETH/USDT"] }
+      }
     };
   }
 
@@ -589,8 +809,13 @@ export class BinanceSpotBot {
     return out;
   }
 
-  private evaluateEntryGate(signal: SignalSummary, fastTimeframe: string): EntryGate {
-    const passScore = signal.score >= this.cfg.minEntryScore;
+  private evaluateEntryGate(
+    signal: SignalSummary,
+    fastTimeframe: string,
+    minEntryScore: number,
+    allowEntries: boolean
+  ): EntryGate {
+    const passScore = signal.score >= minEntryScore;
     const observedSingleBarEdgePct = signal.features.atrPct;
     const roundTripCostPct = (2 * this.cfg.feeBps + this.cfg.paperSpreadBps) / 100;
     const timeframeMinutes = this.timeframeToMinutes(fastTimeframe);
@@ -603,11 +828,11 @@ export class BinanceSpotBot {
     const edgeBufferPct = observedEdgePct - requiredEdgePct;
     const passEdge = edgeBufferPct >= 0;
     return {
-      allowed: signal.action === "enter" && passScore && passEdge,
+      allowed: allowEntries && signal.action === "enter" && passScore && passEdge,
       passScore,
       passEdge,
       score: signal.score,
-      minScore: this.cfg.minEntryScore,
+      minScore: minEntryScore,
       timeframeMinutes,
       timeframeScale,
       holdingBars,
@@ -684,6 +909,117 @@ export class BinanceSpotBot {
     }
 
     return out;
+  }
+
+  private hasNewFastCandle(latestFastCandleTs: Record<SupportedSymbol, number>): boolean {
+    if (!this.state.lastFastCandleTs["BTC/USDT"] || !this.state.lastFastCandleTs["ETH/USDT"]) {
+      return true;
+    }
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      if (latestFastCandleTs[symbol] <= 0) return true;
+      const previous = this.state.lastFastCandleTs[symbol] ?? 0;
+      if (latestFastCandleTs[symbol] > previous) return true;
+    }
+    return false;
+  }
+
+  private applyStarvationAdjustmentIfNeeded(): void {
+    const adjusted = computeStarvationAdjustedThresholds({
+      base: {
+        minEntryScore: this.cfg.minEntryScore,
+        actionEntryScoreMin: this.cfg.initialActionEntryScoreMin,
+        regimeEntryMin: this.cfg.initialRegimeEntryMin
+      },
+      floor: {
+        minEntryScore: this.cfg.starvationFloorMinEntryScore,
+        actionEntryScoreMin: this.cfg.starvationFloorActionEntryScoreMin,
+        regimeEntryMin: this.cfg.starvationFloorRegimeEntryMin
+      },
+      step: {
+        minEntryScore: this.cfg.starvationStepMinEntryScore,
+        actionEntryScoreMin: this.cfg.starvationStepActionEntryScoreMin,
+        regimeEntryMin: this.cfg.starvationStepRegimeEntryMin
+      },
+      fastCandlesWithoutEntry: this.state.fastCandlesWithoutEntry,
+      starvationFastCandlesNoEntry: this.cfg.starvationFastCandlesNoEntry
+    });
+
+    const previous = { ...this.state.dynamicThresholds };
+    this.state.dynamicThresholds = { ...adjusted.thresholds };
+    if (adjusted.level !== this.state.starvationLevelApplied) {
+      logger.info({
+        event: "starvation_adjustment_applied",
+        level: adjusted.level,
+        candlesWithoutEntry: this.state.fastCandlesWithoutEntry,
+        old: previous,
+        next: this.state.dynamicThresholds
+      });
+      this.state.starvationLevelApplied = adjusted.level;
+    }
+  }
+
+  private updateStarvationState(
+    hasNewFastCandle: boolean,
+    entryAttemptedThisCycle: boolean,
+    entryFilledThisCycle: boolean
+  ): void {
+    if (!hasNewFastCandle) return;
+
+    if (entryFilledThisCycle) {
+      if (this.state.fastCandlesWithoutEntry > 0 || this.state.starvationLevelApplied > 0) {
+        logger.info({
+          event: "starvation_reset",
+          candlesWithoutEntry: this.state.fastCandlesWithoutEntry,
+          level: this.state.starvationLevelApplied
+        });
+      }
+      this.state.fastCandlesWithoutEntry = 0;
+      this.state.starvationLevelApplied = 0;
+      this.state.dynamicThresholds = {
+        minEntryScore: this.cfg.minEntryScore,
+        actionEntryScoreMin: this.cfg.initialActionEntryScoreMin,
+        regimeEntryMin: this.cfg.initialRegimeEntryMin
+      };
+      return;
+    }
+
+    if (!entryAttemptedThisCycle) {
+      this.state.fastCandlesWithoutEntry += 1;
+      return;
+    }
+
+    this.state.fastCandlesWithoutEntry += 1;
+  }
+
+  private incrementNoTradeReason(symbol: SupportedSymbol, reason: NoTradeReason): void {
+    this.state.noTradeReasonCounts[symbol][reason] += 1;
+  }
+
+  private toEntryGateDiagnostic(signal: SignalSummary, gate: EntryGate, allowEntries: boolean): {
+    action: SignalSummary["action"];
+    score: number;
+    cooldownActive: boolean;
+    passScore: boolean;
+    passEdge: boolean;
+    allowed: boolean;
+    blockers: string[];
+  } {
+    const blockers: string[] = [];
+    if (!allowEntries) blockers.push("risk_block");
+    if (signal.action !== "enter") blockers.push(`signal_${signal.action}`);
+    if (!gate.passScore) blockers.push("insufficient_score");
+    if (!gate.passEdge) blockers.push("insufficient_edge");
+    if (signal.cooldownActive && signal.action === "hold") blockers.push("cooldown");
+
+    return {
+      action: signal.action,
+      score: signal.score,
+      cooldownActive: signal.cooldownActive,
+      passScore: gate.passScore,
+      passEdge: gate.passEdge,
+      allowed: gate.allowed,
+      blockers
+    };
   }
 
   private timeframeToMinutes(timeframe: string): number {

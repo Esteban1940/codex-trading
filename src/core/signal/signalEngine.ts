@@ -100,6 +100,10 @@ export class SignalEngine {
     candles1h: Candle[];
     lastTradeTs?: number;
     nowTs: number;
+    runtimeThresholds?: {
+      regimeEntryMin?: number;
+      actionEntryScoreMin?: number;
+    };
   }): SymbolSignal {
     const closes15 = params.candles15m.map((c) => c.close);
     const highs15 = params.candles15m.map((c) => c.high);
@@ -142,8 +146,12 @@ export class SignalEngine {
         ? 0
         : clamp((volatilityPct - this.cfg.maxVolatilityPct) / this.cfg.maxVolatilityPct, 0, 1);
 
+    const runtimeRegimeEntryMin = params.runtimeThresholds?.regimeEntryMin ?? this.cfg.regimeEntryMin;
+    const runtimeActionEntryScoreMin =
+      params.runtimeThresholds?.actionEntryScoreMin ?? this.cfg.actionEntryScoreMin;
+
     let trendRegime: SignalFeatures["trendRegime"] = "neutral";
-    if (regimeScore >= this.cfg.regimeEntryMin && volatilityPenalty < 1) trendRegime = "bullish";
+    if (regimeScore >= runtimeRegimeEntryMin && volatilityPenalty < 1) trendRegime = "bullish";
     if (regimeScore <= this.cfg.regimeExitMax) trendRegime = "bearish";
 
     const rawScore = this.cfg.scoreTrendWeight * regimeScore + this.cfg.scoreMomentumWeight * momentumScore;
@@ -161,7 +169,7 @@ export class SignalEngine {
     } else if (momentumScore <= this.cfg.exitMomentumMax) {
       action = "exit";
       reason = "Momentum breakdown";
-    } else if (regimeScore >= this.cfg.regimeEntryMin && score >= this.cfg.actionEntryScoreMin) {
+    } else if (regimeScore >= runtimeRegimeEntryMin && score >= runtimeActionEntryScoreMin) {
       action = cooldownActive ? "hold" : "enter";
       reason = cooldownActive ? "Cooldown active" : "Regime and momentum support entry";
     } else if (score > 0) {

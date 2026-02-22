@@ -12,12 +12,16 @@
 
 Each cycle the bot:
 1. Pulls balances (USDT, BTC, ETH), quotes, and OHLCV for `15m` and `1h`.
-2. Computes per-symbol signals with multi-timeframe features.
-3. Runs risk checks (daily loss, drawdown, max trades/day, ATR circuit breaker, kill switch).
-4. If risk breach and `LIQUIDATE_ON_RISK=true`, liquidates BTC/ETH to USDT.
-5. Otherwise allocates capital between BTC and ETH via score-based allocator.
-6. Rebalances inventory with spot-only buy/sell orders.
-7. If `READ_ONLY_MODE=true`, it logs planned orders but skips execution.
+2. Evaluates signals only when a new fast-timeframe candle is detected.
+3. Computes per-symbol signals with multi-timeframe features.
+4. Runs risk checks (daily loss, drawdown, max trades/day, ATR circuit breaker, kill switch).
+5. If risk breach and `LIQUIDATE_ON_RISK=true`, liquidates BTC/ETH to USDT.
+6. Otherwise allocates capital between BTC and ETH via score-based allocator.
+7. Rebalances inventory with spot-only buy/sell orders.
+8. If `READ_ONLY_MODE=true`, it logs planned orders but skips execution.
+
+If no new fast candle arrives and `SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY=true`, the cycle logs:
+- `cycle_skipped_no_new_candle`
 
 ## SignalEngine
 
@@ -60,21 +64,33 @@ Logs include:
 - `observedEdgePct`, `observedSingleBarEdgePct`, `holdingBars`
 - `requiredEdgePct`, `edgeBufferPct`, `timeframeMinutes`, `timeframeScale`
 - suppression reason: `insufficient_score` or `insufficient_edge`
+- per-cycle `entry_gate_diagnostics` summary
 
-### Paper profiles
+### Profiles (`--profile`)
 
-- `default`: uses `.env` values as-is.
-- `moderate`: applies temporary runtime overrides for short paper runs:
-- `SIGNAL_MIN_ENTRY_SCORE <= 0.20`
-- `SIGNAL_MIN_EDGE_MULTIPLIER <= 1.2`
-- `SIGNAL_EDGE_PCT_CAP <= 0.25`
-- `ALLOCATOR_MIN_SCORE_TO_INVEST <= 0.10`
-- `MIN_HOLD_MINUTES <= 30`
+- `production-conservative`: uses `.env` conservative values.
+- `paper-validation`: short-run calibration profile:
+- `SIGNAL_MIN_ENTRY_SCORE <= 0.15`
+- `SIGNAL_ACTION_ENTRY_SCORE_MIN <= 0.10`
+- `SIGNAL_REGIME_ENTRY_MIN <= 0.10`
+- `SIGNAL_MIN_EDGE_MULTIPLIER <= 1.0`
+- `SIGNAL_EDGE_PCT_CAP <= 0.20`
+- `RISK_MAX_TRADES_PER_DAY=6` (paper-validation only)
 
 Use:
 ```bash
-pnpm dev:paper --real-adapter --paper-profile moderate --cycles 30 --interval-ms 15000
+pnpm dev:paper --paper-sim-real-data --profile paper-validation --cycles 30 --interval-ms 60000
 ```
+
+### Trade starvation control
+
+If no entries are executed for `STARVATION_FAST_CANDLES_NO_ENTRY` fast candles, the bot gradually relaxes entry thresholds:
+- `minEntryScore`
+- `actionEntryScoreMin`
+- `regimeEntryMin`
+
+Each level is bounded by hard floors and logged as:
+- `starvation_adjustment_applied` with old/new thresholds
 
 ## Returning to USDT (InventoryManager)
 
@@ -147,6 +163,20 @@ Reported metrics include:
 - Total fees paid
 - Time in position vs time in USDT
 - Trades by symbol
+- `noTradeReasonCounts` by symbol:
+- `regime_neutral`
+- `insufficient_score`
+- `insufficient_edge`
+- `allocator_threshold`
+- `cooldown`
+- `min_hold`
+- `risk_block`
+
+## Execution modes summary
+
+- `--real-adapter`: direct adapter path (exchange connectivity and live order API path available).
+- `READ_ONLY_MODE=true`: decisions/logging on real data but order placement is skipped.
+- `--paper-sim-real-data`: real Binance quotes/OHLCV + initial balances, local simulated fills/fees/slippage (never sends real orders).
 
 ## What this bot does NOT do
 

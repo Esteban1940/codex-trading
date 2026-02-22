@@ -57,7 +57,23 @@ export interface BinanceExchange {
   sapiGetAccountApiRestrictions(): Promise<ApiRestrictions>;
 }
 
+function assertBinanceCredentialsPresent(): void {
+  const apiKey = config.BINANCE_API_KEY.trim();
+  const apiSecret = config.BINANCE_API_SECRET.trim();
+
+  if (!apiKey || !apiSecret) {
+    throw new Error("Missing Binance credentials. Set BINANCE_API_KEY and BINANCE_API_SECRET in .env.");
+  }
+
+  const placeholders = ["REEMPLAZAR", "CHANGE_ME", "YOUR_", "API_KEY", "API_SECRET"];
+  const looksPlaceholder = (value: string): boolean => placeholders.some((token) => value.toUpperCase().includes(token));
+  if (looksPlaceholder(apiKey) || looksPlaceholder(apiSecret)) {
+    throw new Error("Binance credentials in .env look like placeholders. Replace BINANCE_API_KEY/BINANCE_API_SECRET.");
+  }
+}
+
 export function createBinanceClient(): BinanceExchange {
+  assertBinanceCredentialsPresent();
   const client = new ccxt.binance({
     apiKey: config.BINANCE_API_KEY,
     secret: config.BINANCE_API_SECRET,
@@ -74,6 +90,10 @@ export async function validateBinanceKeySecurity(exchange: BinanceExchange): Pro
     throw new Error("BINANCE_ENABLE_WITHDRAWALS must remain false.");
   }
 
+  // Binance testnet does not expose sapi account restriction endpoints in CCXT.
+  // We still enforce local config (`BINANCE_ENABLE_WITHDRAWALS=false`) and skip remote restriction checks here.
+  if (config.BINANCE_TESTNET) return;
+
   const raw = await withRetry(() => exchange.sapiGetAccountApiRestrictions());
   if (raw?.enableWithdrawals === true) {
     throw new Error("Binance API key has withdrawals enabled. Disable it before continuing.");
@@ -81,7 +101,7 @@ export async function validateBinanceKeySecurity(exchange: BinanceExchange): Pro
   if (raw?.enableReading === false) {
     throw new Error("Binance API key does not allow reading account data.");
   }
-  if (raw?.enableSpotAndMarginTrading === false) {
+  if (!config.READ_ONLY_MODE && raw?.enableSpotAndMarginTrading === false) {
     throw new Error("Binance API key does not allow Spot trading.");
   }
 }

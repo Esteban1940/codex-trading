@@ -126,15 +126,48 @@ class StubSignalEngine {
 
   constructor(private readonly signals: Record<SupportedSymbol, SymbolSignal>) {}
 
-  evaluate(params: { symbol: string }): SymbolSignal {
+  evaluate(params: {
+    symbol: string;
+    candles15m: Candle[];
+    candles1h: Candle[];
+    nowTs: number;
+    lastTradeTs?: number;
+  }): SymbolSignal {
+    void params.candles15m;
+    void params.candles1h;
+    void params.nowTs;
+    void params.lastTradeTs;
     this.calls += 1;
     return this.signals[params.symbol as SupportedSymbol];
   }
 }
 
-function makeSignal(action: SymbolSignal["action"], score: number, trendRegime: "bullish" | "bearish" | "neutral"): SymbolSignal {
+class PriceAwareSignalEngine {
+  evaluate(params: {
+    symbol: string;
+    candles15m: Candle[];
+    candles1h: Candle[];
+    nowTs: number;
+    lastTradeTs?: number;
+  }): SymbolSignal {
+    void params.candles1h;
+    void params.nowTs;
+    void params.lastTradeTs;
+    const close = params.candles15m[params.candles15m.length - 1]?.close ?? 0;
+    const symbol = params.symbol as SupportedSymbol;
+    if (close >= 10_000) return makeSignal("enter", 0.8, "bullish", symbol);
+    return makeSignal("hold", 0, "neutral", symbol);
+  }
+}
+
+function makeSignal(
+  action: SymbolSignal["action"],
+  score: number,
+  trendRegime: "bullish" | "bearish" | "neutral",
+  symbol: SupportedSymbol = "BTC/USDT"
+): SymbolSignal {
   return {
-    symbol: "BTC/USDT",
+    symbol,
     score,
     action,
     reason: "test-signal",
@@ -159,12 +192,25 @@ function makeSignal(action: SymbolSignal["action"], score: number, trendRegime: 
   };
 }
 
+type TestSignalEngine = {
+  evaluate(params: {
+    symbol: string;
+    candles15m: Candle[];
+    candles1h: Candle[];
+    nowTs: number;
+    lastTradeTs?: number;
+  }): SymbolSignal;
+};
+
 function createBot(params: {
   adapter: TestExchangeAdapter;
-  signalEngine: StubSignalEngine;
+  signalEngine: TestSignalEngine;
   evalOnFastCandleCloseOnly?: boolean;
   maxTradesPerDay?: number;
   quoteMaxAgeMs?: number;
+  minFastCandles?: number;
+  minSlowCandles?: number;
+  symbols?: SupportedSymbol[];
 }): BinanceSpotBot {
   return new BinanceSpotBot(
     params.adapter,
@@ -196,8 +242,10 @@ function createBot(params: {
       spreadCircuitBreakerPct: 100
     }),
     {
-      symbols: ["BTC/USDT", "ETH/USDT"],
+      symbols: params.symbols ?? ["BTC/USDT", "ETH/USDT"],
       timeframes: ["15m", "1h"],
+      minFastCandles: params.minFastCandles ?? 1,
+      minSlowCandles: params.minSlowCandles ?? 1,
       maxExposurePerSymbol: 0.6,
       minNotionalUsdt: 10,
       feeBps: 10,
@@ -288,6 +336,47 @@ describe("No-trade reason counters", () => {
 
     expect(report.noTradeReasonCounts["BTC/USDT"].insufficient_score).toBeGreaterThan(0);
   });
+
+  it("increments insufficient_history when candles are below configured minimum", async () => {
+    const adapter = new TestExchangeAdapter({ USDT: 1_000, BTC: 0, ETH: 0 });
+    const signalEngine = new StubSignalEngine({
+      "BTC/USDT": makeSignal("enter", 0.9, "bullish"),
+      "ETH/USDT": makeSignal("enter", 0.9, "bullish", "ETH/USDT")
+    });
+    const bot = createBot({
+      adapter,
+      signalEngine,
+      evalOnFastCandleCloseOnly: false,
+      minFastCandles: 5,
+      minSlowCandles: 5
+    });
+
+    await bot.runCycle();
+    const report = bot.getReport();
+
+    expect(adapter.placedOrders.length).toBe(0);
+    expect(report.noTradeReasonCounts["BTC/USDT"].insufficient_history).toBeGreaterThan(0);
+    expect(report.noTradeReasonCounts["ETH/USDT"].insufficient_history).toBeGreaterThan(0);
+  });
+});
+
+describe("Symbol mapping safety", () => {
+  it("keeps BTC/ETH history aligned even if SYMBOLS order is reversed", async () => {
+    const adapter = new TestExchangeAdapter({ USDT: 1_000, BTC: 0, ETH: 0 });
+    const signalEngine = new PriceAwareSignalEngine();
+    const bot = createBot({
+      adapter,
+      signalEngine,
+      evalOnFastCandleCloseOnly: false,
+      symbols: ["ETH/USDT", "BTC/USDT"]
+    });
+
+    await bot.runCycle();
+
+    const buyOrders = adapter.placedOrders.filter((o) => o.side === "buy");
+    expect(buyOrders.length).toBeGreaterThan(0);
+    expect(buyOrders.every((order) => order.symbol === "BTC/USDT")).toBe(true);
+  });
 });
 
 describe("Risk sell-path regression", () => {
@@ -314,9 +403,11 @@ describe("Risk sell-path regression", () => {
 
 describe("Order safety and fee reconciliation", () => {
   it("generates deterministic clientOrderId for the same trade intent", async () => {
+    const sharedFastCandleTs = Date.now() - 60_000;
+
     const build = () => {
       const adapter = new TestExchangeAdapter({ USDT: 1_000, BTC: 0, ETH: 0 });
-      adapter.fastCandleTs = 1_700_000_000_000;
+      adapter.fastCandleTs = sharedFastCandleTs;
       const signalEngine = new StubSignalEngine({
         "BTC/USDT": makeSignal("enter", 0.8, "bullish"),
         "ETH/USDT": makeSignal("hold", 0, "neutral")

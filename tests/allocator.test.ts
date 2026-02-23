@@ -41,4 +41,24 @@ describe("PortfolioAllocator", () => {
     expect(result.weights["BTC/USDT"]).toBeGreaterThan(0);
     expect(result.weights["ETH/USDT"]).toBe(0);
   });
+
+  it("scales down total risk budget on low-conviction setups when enabled", () => {
+    const scaled = new PortfolioAllocator({
+      maxExposureTotal: 0.8,
+      maxExposurePerSymbol: 0.6,
+      rebalanceThreshold: 0.05,
+      minScoreToInvest: 0.15,
+      convictionScaling: true,
+      convictionMinScale: 0.25
+    });
+
+    const result = scaled.allocate({
+      scores: { "BTC/USDT": 0.2, "ETH/USDT": 0 },
+      currentWeights: { "BTC/USDT": 0, "ETH/USDT": 0, USDT: 1 }
+    });
+
+    expect(result.weights["BTC/USDT"]).toBeGreaterThan(0);
+    expect(result.weights["BTC/USDT"]).toBeLessThan(0.3);
+    expect(result.weights.USDT).toBeGreaterThan(0.7);
+  });
 });

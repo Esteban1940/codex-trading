@@ -72,6 +72,10 @@ SIGNAL_ACTION_ENTRY_SCORE_MIN=0.10
 SIGNAL_REGIME_ENTRY_MIN=0.10
 SIGNAL_MIN_EDGE_MULTIPLIER=1.0
 SIGNAL_EDGE_PCT_CAP=0.20
+SIGNAL_MIN_FAST_CANDLES=80
+SIGNAL_MIN_SLOW_CANDLES=80
+ALLOCATOR_CONVICTION_SCALING=true
+ALLOCATOR_CONVICTION_MIN_SCALE=0.35
 RISK_MAX_TRADES_PER_DAY=6
 PAPER_SPREAD_BPS=10
 ```
@@ -94,6 +98,10 @@ ALLOCATOR_MAX_EXPOSURE_TOTAL=0.3
 ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL=0.15
 MAX_NOTIONAL_PER_SYMBOL_USD=20
 MAX_NOTIONAL_PER_MARKET_USD=40
+
+WORKER_ERROR_BACKOFF_MS=5000
+WORKER_ERROR_BACKOFF_JITTER_MS=500
+WORKER_MAX_CONSECUTIVE_ERRORS=10
 ```
 
 For small balances, ensure this is true so orders are not blocked by min notional:
@@ -125,6 +133,8 @@ pnpm run checklist:production
 3. Risk liquidation path tested (`LIQUIDATE_ON_RISK=true`).
 4. Conservative limits active (validation passes at startup).
 5. API key verified: trading enabled, withdrawals disabled, IP whitelist configured.
+6. Minimum-history gates calibrated (`SIGNAL_MIN_FAST_CANDLES`, `SIGNAL_MIN_SLOW_CANDLES`) so entries are not made on sparse data.
+7. Worker resilience configured (`WORKER_ERROR_BACKOFF_MS`, `WORKER_ERROR_BACKOFF_JITTER_MS`, `WORKER_MAX_CONSECUTIVE_ERRORS`).
 
 ## 10) Notes
 

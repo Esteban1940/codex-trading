@@ -49,7 +49,10 @@ export function parseSymbols(raw: string): SupportedSymbol[] {
  * Parses fast/slow timeframe tuple from env string.
  */
 export function parseTimeframes(raw: string): [string, string] {
-  const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   if (parts.length !== 2) throw new Error("TIMEFRAMES must include two entries, e.g. 15m,1h");
   return [parts[0] ?? "15m", parts[1] ?? "1h"];
 }
@@ -74,6 +77,13 @@ export function timeframeToMs(timeframe: string): number {
     default:
       return 15 * 60_000;
   }
+}
+
+function workerErrorBackoffMs(): number {
+  const base = Math.max(0, config.WORKER_ERROR_BACKOFF_MS);
+  const jitter = Math.max(0, config.WORKER_ERROR_BACKOFF_JITTER_MS);
+  if (jitter <= 0) return base;
+  return base + Math.floor(Math.random() * (jitter + 1));
 }
 
 if (config.WORKER_REAL_ADAPTER && !config.LIVE_TRADING && !config.READ_ONLY_MODE) {
@@ -180,7 +190,9 @@ const bot = new BinanceSpotBot(
     maxExposureTotal: config.ALLOCATOR_MAX_EXPOSURE_TOTAL,
     maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
     rebalanceThreshold: config.ALLOCATOR_REBALANCE_THRESHOLD,
-    minScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST
+    minScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST,
+    convictionScaling: config.ALLOCATOR_CONVICTION_SCALING,
+    convictionMinScale: config.ALLOCATOR_CONVICTION_MIN_SCALE
   }),
   new InventoryManager({
     feeBps: config.DEFAULT_FEE_BPS,
@@ -202,9 +214,11 @@ const bot = new BinanceSpotBot(
     marketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT,
     spreadCircuitBreakerPct: config.RISK_SPREAD_CIRCUIT_BREAKER_PCT
   }),
-    {
-      symbols: parseSymbols(config.SYMBOLS),
-      timeframes: parseTimeframes(config.TIMEFRAMES),
+  {
+    symbols: parseSymbols(config.SYMBOLS),
+    timeframes: parseTimeframes(config.TIMEFRAMES),
+    minFastCandles: config.SIGNAL_MIN_FAST_CANDLES,
+    minSlowCandles: config.SIGNAL_MIN_SLOW_CANDLES,
     maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
     minNotionalUsdt: config.MIN_NOTIONAL_USDT,
     feeBps: config.DEFAULT_FEE_BPS,
@@ -236,9 +250,9 @@ const bot = new BinanceSpotBot(
     quoteStaleRetryBackoffMs: config.EXEC_QUOTE_STALE_RETRY_BACKOFF_MS,
     riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10),
     riskCircuitBreakerCooldownMinutes: config.RISK_CIRCUIT_BREAKER_COOLDOWN_MINUTES
-    },
-    persistence
-  );
+  },
+  persistence
+);
 
 export async function main(): Promise<void> {
   const requestShutdown = (signal: NodeJS.Signals): void => {
@@ -264,11 +278,15 @@ export async function main(): Promise<void> {
     signalMinEntryScore: config.SIGNAL_MIN_ENTRY_SCORE,
     signalActionEntryScoreMin: config.SIGNAL_ACTION_ENTRY_SCORE_MIN,
     signalRegimeEntryMin: config.SIGNAL_REGIME_ENTRY_MIN,
+    signalMinFastCandles: config.SIGNAL_MIN_FAST_CANDLES,
+    signalMinSlowCandles: config.SIGNAL_MIN_SLOW_CANDLES,
     signalMinEdgeMultiplier: config.SIGNAL_MIN_EDGE_MULTIPLIER,
     signalEdgePctCap: config.SIGNAL_EDGE_PCT_CAP,
     signalRegimeExitMax: config.SIGNAL_REGIME_EXIT_MAX,
     signalExitMomentumMax: config.SIGNAL_EXIT_MOMENTUM_MAX,
     allocatorMinScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST,
+    allocatorConvictionScaling: config.ALLOCATOR_CONVICTION_SCALING,
+    allocatorConvictionMinScale: config.ALLOCATOR_CONVICTION_MIN_SCALE,
     evalOnFastCandleCloseOnly: config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY,
     workerAlignToFastCandleClose: config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE,
     workerCandleCloseGraceMs: config.WORKER_CANDLE_CLOSE_GRACE_MS,
@@ -292,6 +310,9 @@ export async function main(): Promise<void> {
     monitorNoTradeAlertCooldownCycles: config.MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES,
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
+    workerErrorBackoffMs: config.WORKER_ERROR_BACKOFF_MS,
+    workerErrorBackoffJitterMs: config.WORKER_ERROR_BACKOFF_JITTER_MS,
+    workerMaxConsecutiveErrors: config.WORKER_MAX_CONSECUTIVE_ERRORS,
     readOnlyMode: config.READ_ONLY_MODE,
     liveRequireConservativeLimits: config.LIVE_REQUIRE_CONSERVATIVE_LIMITS,
     persistenceBackend: config.PERSISTENCE_BACKEND,
@@ -308,54 +329,89 @@ export async function main(): Promise<void> {
   });
 
   let cycle = 0;
+  let consecutiveErrors = 0;
   let lastDailyReportKey = "";
+
   while (!shutdownRequested && (config.WORKER_MAX_CYCLES === 0 || cycle < config.WORKER_MAX_CYCLES)) {
     cycle += 1;
 
-    // Run one full decision/execution cycle and snapshot report metrics.
-    await bot.runCycle();
-    const report = bot.getReport();
-    setMetric("worker.cycle", cycle);
-    setMetric("worker.report.finalUsdt", report.finalUsdt);
-    setMetric("worker.report.maxDrawdownPct", report.maxDrawdownPct);
-    setMetric("worker.report.totalTrades", report.totalTrades);
-    setMetric("worker.report.feesPaidUsdt", report.feesPaidUsdt);
-    setMetric("worker.report.timeInPositionPct", report.timeInPositionPct);
-    setMetric("worker.notrade.btc.insufficient_score", report.noTradeReasonCounts["BTC/USDT"].insufficient_score);
-    setMetric("worker.notrade.btc.insufficient_edge", report.noTradeReasonCounts["BTC/USDT"].insufficient_edge);
-    setMetric("worker.notrade.eth.insufficient_score", report.noTradeReasonCounts["ETH/USDT"].insufficient_score);
-    setMetric("worker.notrade.eth.insufficient_edge", report.noTradeReasonCounts["ETH/USDT"].insufficient_edge);
-    const noTradeAlerts = noTradeMonitor.evaluate(report, cycle);
-    setMetric("worker.notrade.alerts_triggered", noTradeAlerts.length);
-    for (const alert of noTradeAlerts) {
-      logger.warn({ event: "no_trade_reason_spike", ...alert });
-      await sendAlert("no_trade_reason_spike", { ...alert });
-    }
-    await writeHeartbeat(cycle);
+    try {
+      await bot.runCycle();
+      consecutiveErrors = 0;
 
-    if (config.DAILY_REPORT_ENABLED) {
-      const nowTs = Date.now();
-      const dayKey = utcDayKey(nowTs);
-      const hourUtc = new Date(nowTs).getUTCHours();
-      if (dayKey !== lastDailyReportKey && hourUtc >= config.DAILY_REPORT_HOUR_UTC) {
-        const payload = buildDailyRiskReport(report, cycle, dayKey);
-        logger.info({ event: "daily_risk_report", ...payload });
-        await sendAlert("daily_risk_report", payload);
-        lastDailyReportKey = dayKey;
+      // Run one full decision/execution cycle and snapshot report metrics.
+      const report = bot.getReport();
+      setMetric("worker.cycle", cycle);
+      setMetric("worker.report.finalUsdt", report.finalUsdt);
+      setMetric("worker.report.maxDrawdownPct", report.maxDrawdownPct);
+      setMetric("worker.report.totalTrades", report.totalTrades);
+      setMetric("worker.report.feesPaidUsdt", report.feesPaidUsdt);
+      setMetric("worker.report.timeInPositionPct", report.timeInPositionPct);
+      setMetric("worker.notrade.btc.insufficient_score", report.noTradeReasonCounts["BTC/USDT"].insufficient_score);
+      setMetric("worker.notrade.btc.insufficient_edge", report.noTradeReasonCounts["BTC/USDT"].insufficient_edge);
+      setMetric("worker.notrade.eth.insufficient_score", report.noTradeReasonCounts["ETH/USDT"].insufficient_score);
+      setMetric("worker.notrade.eth.insufficient_edge", report.noTradeReasonCounts["ETH/USDT"].insufficient_edge);
+      const noTradeAlerts = noTradeMonitor.evaluate(report, cycle);
+      setMetric("worker.notrade.alerts_triggered", noTradeAlerts.length);
+      for (const alert of noTradeAlerts) {
+        logger.warn({ event: "no_trade_reason_spike", ...alert });
+        await sendAlert("no_trade_reason_spike", { ...alert });
       }
-    }
+      await writeHeartbeat(cycle);
 
-    // Keep loop pacing deterministic (fixed) or candle-close aligned.
-    logger.info({ event: "worker_cycle_done", cycle, report });
-    const sleepMs = computeSleepMs(Date.now());
-    logger.info({
-      event: "worker_sleep_scheduled",
-      cycle,
-      sleepMs,
-      alignToFastCandleClose: config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE && config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY
-    });
-    if (!shutdownRequested) {
-      await sleep(sleepMs);
+      if (config.DAILY_REPORT_ENABLED) {
+        const nowTs = Date.now();
+        const dayKey = utcDayKey(nowTs);
+        const hourUtc = new Date(nowTs).getUTCHours();
+        if (dayKey !== lastDailyReportKey && hourUtc >= config.DAILY_REPORT_HOUR_UTC) {
+          const payload = buildDailyRiskReport(report, cycle, dayKey);
+          logger.info({ event: "daily_risk_report", ...payload });
+          await sendAlert("daily_risk_report", payload);
+          lastDailyReportKey = dayKey;
+        }
+      }
+
+      // Keep loop pacing deterministic (fixed) or candle-close aligned.
+      logger.info({ event: "worker_cycle_done", cycle, report });
+      const sleepMs = computeSleepMs(Date.now());
+      logger.info({
+        event: "worker_sleep_scheduled",
+        cycle,
+        sleepMs,
+        alignToFastCandleClose: config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE && config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY
+      });
+      if (!shutdownRequested) {
+        await sleep(sleepMs);
+      }
+    } catch (error) {
+      consecutiveErrors += 1;
+      logger.error(
+        {
+          err: error,
+          event: "worker_cycle_failed",
+          cycle,
+          consecutiveErrors,
+          maxConsecutiveErrors: config.WORKER_MAX_CONSECUTIVE_ERRORS
+        },
+        "Worker cycle failed"
+      );
+
+      await sendAlert("worker_cycle_failed", {
+        cycle,
+        consecutiveErrors,
+        reason: error instanceof Error ? error.message : String(error)
+      });
+
+      const maxConsecutiveErrors = Math.max(0, config.WORKER_MAX_CONSECUTIVE_ERRORS);
+      if (maxConsecutiveErrors > 0 && consecutiveErrors >= maxConsecutiveErrors) {
+        throw new Error(
+          `Worker stopped after ${consecutiveErrors} consecutive errors (WORKER_MAX_CONSECUTIVE_ERRORS=${maxConsecutiveErrors}).`
+        );
+      }
+
+      if (!shutdownRequested) {
+        await sleep(workerErrorBackoffMs());
+      }
     }
   }
 

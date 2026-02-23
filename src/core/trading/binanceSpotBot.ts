@@ -4,7 +4,7 @@ import { logger } from "../../infra/logger.js";
 import { sleep } from "../../infra/retry.js";
 import { sendAlert } from "../../infra/alerts.js";
 import type { ExchangeAdapter } from "../interfaces.js";
-import type { Order, PlaceOrderRequest, Position, Quote, RiskSnapshot } from "../domain/types.js";
+import type { Candle, Order, PlaceOrderRequest, Position, Quote, RiskSnapshot } from "../domain/types.js";
 import { SignalEngine } from "../signal/signalEngine.js";
 import { PortfolioAllocator } from "../portfolio/portfolioAllocator.js";
 import { InventoryManager, type Holdings } from "../inventory/inventoryManager.js";
@@ -16,6 +16,8 @@ export type SupportedSymbol = "BTC/USDT" | "ETH/USDT";
 interface BotConfig {
   symbols: SupportedSymbol[];
   timeframes: [string, string];
+  minFastCandles?: number;
+  minSlowCandles?: number;
   maxExposurePerSymbol: number;
   minNotionalUsdt: number;
   feeBps: number;
@@ -122,10 +124,13 @@ type SignalSummary = {
 
 interface EntryGate {
   allowed: boolean;
+  historyReady: boolean;
   passScore: boolean;
   passEdge: boolean;
   score: number;
   minScore: number;
+  observedSpreadBps: number;
+  effectiveSpreadBps: number;
   timeframeMinutes: number;
   timeframeScale: number;
   holdingBars: number;
@@ -139,6 +144,7 @@ interface EntryGate {
 
 type NoTradeReason =
   | "regime_neutral"
+  | "insufficient_history"
   | "insufficient_score"
   | "insufficient_edge"
   | "allocator_threshold"
@@ -151,6 +157,7 @@ type NoTradeReasonCounts = Record<NoTradeReason, number>;
 function emptyNoTradeReasonCounts(): NoTradeReasonCounts {
   return {
     regime_neutral: 0,
+    insufficient_history: 0,
     insufficient_score: 0,
     insufficient_edge: 0,
     allocator_threshold: 0,
@@ -322,21 +329,37 @@ export class BinanceSpotBot {
     this.state.lastCycleMs = now;
     this.bootstrapPositionEntryTimestamps(now, holdingsBefore, quotesBefore);
 
-    const histories = await Promise.all(
-      this.cfg.symbols.flatMap((symbol) => [
-        this.adapter.getHistory(symbol, new Date(now - 7 * 24 * 60 * 60 * 1000), new Date(now), tfFast),
-        this.adapter.getHistory(symbol, new Date(now - 30 * 24 * 60 * 60 * 1000), new Date(now), tfSlow)
-      ])
-    );
-    this.warnIfHistoryStale("BTC/USDT", tfFast, histories[0]?.[histories[0].length - 1]?.ts ?? 0, now);
-    this.warnIfHistoryStale("BTC/USDT", tfSlow, histories[1]?.[histories[1].length - 1]?.ts ?? 0, now);
-    this.warnIfHistoryStale("ETH/USDT", tfFast, histories[2]?.[histories[2].length - 1]?.ts ?? 0, now);
-    this.warnIfHistoryStale("ETH/USDT", tfSlow, histories[3]?.[histories[3].length - 1]?.ts ?? 0, now);
+    const histories = await this.fetchHistories(now, tfFast, tfSlow);
 
     const latestFastCandleTs: Record<SupportedSymbol, number> = {
-      "BTC/USDT": histories[0]?.[histories[0].length - 1]?.ts ?? 0,
-      "ETH/USDT": histories[2]?.[histories[2].length - 1]?.ts ?? 0
+      "BTC/USDT": histories["BTC/USDT"].fast[histories["BTC/USDT"].fast.length - 1]?.ts ?? 0,
+      "ETH/USDT": histories["ETH/USDT"].fast[histories["ETH/USDT"].fast.length - 1]?.ts ?? 0
     };
+
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      this.warnIfHistoryStale(symbol, tfFast, histories[symbol].fast[histories[symbol].fast.length - 1]?.ts ?? 0, now);
+      this.warnIfHistoryStale(symbol, tfSlow, histories[symbol].slow[histories[symbol].slow.length - 1]?.ts ?? 0, now);
+    }
+
+    const historyReady: Record<SupportedSymbol, boolean> = {
+      "BTC/USDT": this.isHistoryReadyForSignals(histories["BTC/USDT"].fast.length, histories["BTC/USDT"].slow.length),
+      "ETH/USDT": this.isHistoryReadyForSignals(histories["ETH/USDT"].fast.length, histories["ETH/USDT"].slow.length)
+    };
+
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      if (!historyReady[symbol]) {
+        logger.warn({
+          event: "history_insufficient_for_signal",
+          ...logContext,
+          symbol,
+          fastCandles: histories[symbol].fast.length,
+          slowCandles: histories[symbol].slow.length,
+          requiredFastCandles: this.effectiveMinFastCandles(),
+          requiredSlowCandles: this.effectiveMinSlowCandles()
+        });
+      }
+    }
+
     const hasNewFastCandle = this.hasNewFastCandle(latestFastCandleTs);
 
     if (this.cfg.evalOnFastCandleCloseOnly && !hasNewFastCandle) {
@@ -372,28 +395,32 @@ export class BinanceSpotBot {
     this.applyStarvationAdjustmentIfNeeded();
 
     const signals = {
-      "BTC/USDT": this.signalEngine.evaluate({
-        symbol: "BTC/USDT",
-        candles15m: histories[0] ?? [],
-        candles1h: histories[1] ?? [],
-        lastTradeTs: this.state.lastTradeTs["BTC/USDT"],
-        nowTs: now,
-        runtimeThresholds: {
-          regimeEntryMin: this.state.dynamicThresholds.regimeEntryMin,
-          actionEntryScoreMin: this.state.dynamicThresholds.actionEntryScoreMin
-        }
-      }),
-      "ETH/USDT": this.signalEngine.evaluate({
-        symbol: "ETH/USDT",
-        candles15m: histories[2] ?? [],
-        candles1h: histories[3] ?? [],
-        lastTradeTs: this.state.lastTradeTs["ETH/USDT"],
-        nowTs: now,
-        runtimeThresholds: {
-          regimeEntryMin: this.state.dynamicThresholds.regimeEntryMin,
-          actionEntryScoreMin: this.state.dynamicThresholds.actionEntryScoreMin
-        }
-      })
+      "BTC/USDT": historyReady["BTC/USDT"]
+        ? this.signalEngine.evaluate({
+            symbol: "BTC/USDT",
+            candles15m: histories["BTC/USDT"].fast,
+            candles1h: histories["BTC/USDT"].slow,
+            lastTradeTs: this.state.lastTradeTs["BTC/USDT"],
+            nowTs: now,
+            runtimeThresholds: {
+              regimeEntryMin: this.state.dynamicThresholds.regimeEntryMin,
+              actionEntryScoreMin: this.state.dynamicThresholds.actionEntryScoreMin
+            }
+          })
+        : this.fallbackSignalForInsufficientHistory("BTC/USDT"),
+      "ETH/USDT": historyReady["ETH/USDT"]
+        ? this.signalEngine.evaluate({
+            symbol: "ETH/USDT",
+            candles15m: histories["ETH/USDT"].fast,
+            candles1h: histories["ETH/USDT"].slow,
+            lastTradeTs: this.state.lastTradeTs["ETH/USDT"],
+            nowTs: now,
+            runtimeThresholds: {
+              regimeEntryMin: this.state.dynamicThresholds.regimeEntryMin,
+              actionEntryScoreMin: this.state.dynamicThresholds.actionEntryScoreMin
+            }
+          })
+        : this.fallbackSignalForInsufficientHistory("ETH/USDT")
     };
 
     const signalDecisionPayload = {
@@ -406,6 +433,10 @@ export class BinanceSpotBot {
     await this.recordEvent("signal_decisions", signalDecisionPayload);
 
     for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      if (!historyReady[symbol]) {
+        this.incrementNoTradeReason(symbol, "insufficient_history");
+        continue;
+      }
       if (signals[symbol].features.trendRegime === "neutral") {
         this.incrementNoTradeReason(symbol, "regime_neutral");
       }
@@ -489,9 +520,27 @@ export class BinanceSpotBot {
 
       const cooldownProtected = this.getCooldownProtectedSymbols(signals, currentWeights);
       const entrySuppressed: Array<{ symbol: SupportedSymbol; reason: string }> = [];
+      const observedSpreadBps: Record<SupportedSymbol, number> = {
+        "BTC/USDT": this.spreadBpsFromQuote(quotesBefore["BTC/USDT"]),
+        "ETH/USDT": this.spreadBpsFromQuote(quotesBefore["ETH/USDT"])
+      };
       const entryGate: Record<SupportedSymbol, EntryGate> = {
-        "BTC/USDT": this.evaluateEntryGate(signals["BTC/USDT"], tfFast, this.state.dynamicThresholds.minEntryScore, allowEntries),
-        "ETH/USDT": this.evaluateEntryGate(signals["ETH/USDT"], tfFast, this.state.dynamicThresholds.minEntryScore, allowEntries)
+        "BTC/USDT": this.evaluateEntryGate(
+          signals["BTC/USDT"],
+          tfFast,
+          this.state.dynamicThresholds.minEntryScore,
+          allowEntries,
+          historyReady["BTC/USDT"],
+          observedSpreadBps["BTC/USDT"]
+        ),
+        "ETH/USDT": this.evaluateEntryGate(
+          signals["ETH/USDT"],
+          tfFast,
+          this.state.dynamicThresholds.minEntryScore,
+          allowEntries,
+          historyReady["ETH/USDT"],
+          observedSpreadBps["ETH/USDT"]
+        )
       };
 
       const allocation = this.allocator.allocate({
@@ -521,14 +570,19 @@ export class BinanceSpotBot {
         entryAttemptedThisCycle = true;
         if (!entryGate[symbol].allowed) {
           const reason =
-            !allowEntries
-              ? "risk_block"
-              : !entryGate[symbol].passScore
-                ? "insufficient_score"
-                : !entryGate[symbol].passEdge
-                  ? "insufficient_edge"
-                  : "entry_not_allowed";
+            !entryGate[symbol].historyReady
+              ? "insufficient_history"
+              : !allowEntries
+                ? "risk_block"
+                : !entryGate[symbol].passScore
+                  ? "insufficient_score"
+                  : !entryGate[symbol].passEdge
+                    ? "insufficient_edge"
+                    : "entry_not_allowed";
           entrySuppressed.push({ symbol, reason });
+          if (reason === "insufficient_history") {
+            this.incrementNoTradeReason(symbol, "insufficient_history");
+          }
           if (reason === "insufficient_score") {
             this.incrementNoTradeReason(symbol, "insufficient_score");
           }
@@ -826,6 +880,81 @@ export class BinanceSpotBot {
     };
   }
 
+  private async fetchHistories(
+    nowTs: number,
+    fastTimeframe: string,
+    slowTimeframe: string
+  ): Promise<Record<SupportedSymbol, { fast: Candle[]; slow: Candle[] }>> {
+    const windowsBySymbol = await Promise.all(
+      this.cfg.symbols.map(async (symbol) => {
+        const [fast, slow] = await Promise.all([
+          this.adapter.getHistory(symbol, new Date(nowTs - 7 * 24 * 60 * 60 * 1000), new Date(nowTs), fastTimeframe),
+          this.adapter.getHistory(symbol, new Date(nowTs - 30 * 24 * 60 * 60 * 1000), new Date(nowTs), slowTimeframe)
+        ]);
+        return { symbol, fast, slow };
+      })
+    );
+
+    const historyMap: Record<SupportedSymbol, { fast: Candle[]; slow: Candle[] }> = {
+      "BTC/USDT": { fast: [], slow: [] },
+      "ETH/USDT": { fast: [], slow: [] }
+    };
+    for (const item of windowsBySymbol) {
+      historyMap[item.symbol] = { fast: item.fast, slow: item.slow };
+    }
+
+    return historyMap;
+  }
+
+  private effectiveMinFastCandles(): number {
+    return Math.max(1, Math.floor(this.cfg.minFastCandles ?? 80));
+  }
+
+  private effectiveMinSlowCandles(): number {
+    return Math.max(1, Math.floor(this.cfg.minSlowCandles ?? 80));
+  }
+
+  private isHistoryReadyForSignals(fastCandles: number, slowCandles: number): boolean {
+    return fastCandles >= this.effectiveMinFastCandles() && slowCandles >= this.effectiveMinSlowCandles();
+  }
+
+  private fallbackSignalForInsufficientHistory(symbol: SupportedSymbol): ReturnType<SignalEngine["evaluate"]> {
+    return {
+      symbol,
+      score: 0,
+      action: "hold",
+      reason: "Insufficient candle history",
+      cooldownActive: false,
+      features: {
+        emaFast15m: 0,
+        emaSlow15m: 0,
+        emaFast1h: 0,
+        emaSlow1h: 0,
+        rsi: 50,
+        roc: 0,
+        atr: 0,
+        atrPct: 0,
+        volatilityPct: 0,
+        volatilityPenalty: 0,
+        trendFastPct: 0,
+        trendSlowPct: 0,
+        regimeScore: 0,
+        trendRegime: "neutral",
+        momentumScore: 0
+      }
+    };
+  }
+
+  private spreadBpsFromQuote(quote: QuoteSnapshot): number {
+    const bid = Number(quote.bid ?? 0);
+    const ask = Number(quote.ask ?? 0);
+    const mid = (bid + ask) / 2;
+    if (bid <= 0 || ask <= 0 || mid <= 0) return this.cfg.paperSpreadBps;
+    const spreadBps = ((ask - bid) / mid) * 10_000;
+    if (!Number.isFinite(spreadBps) || spreadBps < 0) return this.cfg.paperSpreadBps;
+    return spreadBps;
+  }
+
   private toLastPriceMap(quotes: Record<SupportedSymbol, QuoteSnapshot>): Record<SupportedSymbol, number> {
     return {
       "BTC/USDT": quotes["BTC/USDT"].last,
@@ -945,11 +1074,14 @@ export class BinanceSpotBot {
     signal: SignalSummary,
     fastTimeframe: string,
     minEntryScore: number,
-    allowEntries: boolean
+    allowEntries: boolean,
+    historyReady: boolean,
+    observedSpreadBps: number
   ): EntryGate {
     const passScore = signal.score >= minEntryScore;
     const observedSingleBarEdgePct = signal.features.atrPct;
-    const roundTripCostPct = (2 * this.cfg.feeBps + this.cfg.paperSpreadBps) / 100;
+    const effectiveSpreadBps = observedSpreadBps > 0 ? observedSpreadBps : this.cfg.paperSpreadBps;
+    const roundTripCostPct = (2 * this.cfg.feeBps + effectiveSpreadBps) / 100;
     const timeframeMinutes = this.timeframeToMinutes(fastTimeframe);
     const timeframeScale = this.edgeTimeframeScale(timeframeMinutes);
     const holdingBars = Math.max(1, this.cfg.minHoldMinutes / Math.max(1, timeframeMinutes));
@@ -960,11 +1092,14 @@ export class BinanceSpotBot {
     const edgeBufferPct = observedEdgePct - requiredEdgePct;
     const passEdge = edgeBufferPct >= 0;
     return {
-      allowed: allowEntries && signal.action === "enter" && passScore && passEdge,
+      allowed: allowEntries && historyReady && signal.action === "enter" && passScore && passEdge,
+      historyReady,
       passScore,
       passEdge,
       score: signal.score,
       minScore: minEntryScore,
+      observedSpreadBps,
+      effectiveSpreadBps,
       timeframeMinutes,
       timeframeScale,
       holdingBars,
@@ -1162,6 +1297,7 @@ export class BinanceSpotBot {
     blockers: string[];
   } {
     const blockers: string[] = [];
+    if (!gate.historyReady) blockers.push("insufficient_history");
     if (!allowEntries) blockers.push("risk_block");
     if (signal.action !== "enter") blockers.push(`signal_${signal.action}`);
     if (!gate.passScore) blockers.push("insufficient_score");
@@ -1376,11 +1512,26 @@ export class BinanceSpotBot {
       const persisted = await this.persistence.getState<RuntimeState>(this.runtimeStateKey);
       if (!persisted) return;
 
-      this.state = {
+      const mergedState = {
         ...this.state,
         ...persisted,
         lastCycleMs: nowTs,
         currentDayKey: this.dayKey(nowTs)
+      };
+
+      const persistedNoTradeCounts = (persisted as Partial<RuntimeState>).noTradeReasonCounts;
+      this.state = {
+        ...mergedState,
+        noTradeReasonCounts: {
+          "BTC/USDT": {
+            ...emptyNoTradeReasonCounts(),
+            ...(persistedNoTradeCounts?.["BTC/USDT"] ?? mergedState.noTradeReasonCounts["BTC/USDT"])
+          },
+          "ETH/USDT": {
+            ...emptyNoTradeReasonCounts(),
+            ...(persistedNoTradeCounts?.["ETH/USDT"] ?? mergedState.noTradeReasonCounts["ETH/USDT"])
+          }
+        }
       };
       logger.info({
         event: "runtime_state_restored",

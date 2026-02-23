@@ -92,6 +92,30 @@ function toNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function normalizeOrderStatus(status: string | undefined, fallback: Order["status"] = "new"): Order["status"] {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  switch (normalized) {
+    case "closed":
+    case "filled":
+      return "filled";
+    case "canceled":
+    case "cancelled":
+      return "cancelled";
+    case "rejected":
+    case "expired":
+    case "failed":
+      return "rejected";
+    case "partially_filled":
+    case "partial":
+      return "partially_filled";
+    case "open":
+    case "new":
+      return "new";
+    default:
+      return fallback;
+  }
+}
+
 function roundDownToStep(value: number, step: number): number {
   if (step <= 0) return value;
   const units = Math.floor(value / step);
@@ -515,7 +539,7 @@ export class BinanceAdapter implements ExchangeAdapter {
       symbol: normalized.request.symbol,
       side: normalized.request.side,
       type: normalized.request.type,
-      status: response.status === "closed" ? "filled" : "new",
+      status: normalizeOrderStatus(response.status, "new"),
       price: normalized.request.price,
       quantity: normalized.request.quantity,
       filledQuantity: Number(response.filled ?? 0),
@@ -532,14 +556,7 @@ export class BinanceAdapter implements ExchangeAdapter {
   async getOrderStatus(orderId: string): Promise<Order> {
     await this.ensureInit();
     const order = asOrderPayload(await this.callExchange("fetchOrder", () => this.exchange.fetchOrder(orderId)));
-    const normalizedStatus: Order["status"] =
-      order.status === "closed"
-        ? "filled"
-        : order.status === "canceled"
-          ? "cancelled"
-          : order.status === "open"
-            ? "new"
-            : "partially_filled";
+    const normalizedStatus = normalizeOrderStatus(order.status, "partially_filled");
 
     return {
       id: String(order.id ?? orderId),

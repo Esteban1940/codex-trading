@@ -134,7 +134,9 @@ export function buildAllocator(overrides?: RuntimeOverrides): PortfolioAllocator
     maxExposureTotal: config.ALLOCATOR_MAX_EXPOSURE_TOTAL,
     maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
     rebalanceThreshold: config.ALLOCATOR_REBALANCE_THRESHOLD,
-    minScoreToInvest: overrides?.allocatorMinScoreToInvest ?? config.ALLOCATOR_MIN_SCORE_TO_INVEST
+    minScoreToInvest: overrides?.allocatorMinScoreToInvest ?? config.ALLOCATOR_MIN_SCORE_TO_INVEST,
+    convictionScaling: config.ALLOCATOR_CONVICTION_SCALING,
+    convictionMinScale: config.ALLOCATOR_CONVICTION_MIN_SCALE
   });
 }
 
@@ -199,6 +201,8 @@ export function buildBot(params: { realAdapter: boolean; paperSimRealData: boole
     {
       symbols,
       timeframes,
+      minFastCandles: config.SIGNAL_MIN_FAST_CANDLES,
+      minSlowCandles: config.SIGNAL_MIN_SLOW_CANDLES,
       maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
       minNotionalUsdt: config.MIN_NOTIONAL_USDT,
       feeBps: config.DEFAULT_FEE_BPS,
@@ -319,8 +323,12 @@ export function logEffectiveRuntimeConfig(
     signalRegimeExitMax: config.SIGNAL_REGIME_EXIT_MAX,
     signalExitMomentumMax: config.SIGNAL_EXIT_MOMENTUM_MAX,
     allocatorMinScoreToInvest: overrides?.allocatorMinScoreToInvest ?? config.ALLOCATOR_MIN_SCORE_TO_INVEST,
+    allocatorConvictionScaling: config.ALLOCATOR_CONVICTION_SCALING,
+    allocatorConvictionMinScale: config.ALLOCATOR_CONVICTION_MIN_SCALE,
     minHoldMinutes: overrides?.minHoldMinutes ?? config.MIN_HOLD_MINUTES,
     evalOnFastCandleCloseOnly: config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY,
+    signalMinFastCandles: config.SIGNAL_MIN_FAST_CANDLES,
+    signalMinSlowCandles: config.SIGNAL_MIN_SLOW_CANDLES,
     workerAlignToFastCandleClose: config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE,
     workerCandleCloseGraceMs: config.WORKER_CANDLE_CLOSE_GRACE_MS,
     execQuoteMaxAgeMs: config.EXEC_QUOTE_MAX_AGE_MS,

@@ -13,16 +13,20 @@
 Each cycle the bot:
 1. Pulls balances (USDT, BTC, ETH), quotes, and OHLCV for `15m` and `1h`.
 2. Evaluates signals only when a new fast-timeframe candle is detected.
-3. Computes per-symbol signals with multi-timeframe features.
-4. Runs risk checks (daily loss, drawdown, max trades/day, ATR circuit breaker, kill switch).
-5. If risk breach and `LIQUIDATE_ON_RISK=true`, liquidates BTC/ETH to USDT.
-6. Otherwise allocates capital between BTC and ETH via score-based allocator.
-7. Rebalances inventory with spot-only buy/sell orders.
-8. If `READ_ONLY_MODE=true`, it logs planned orders but skips execution.
-9. Persists runtime state and execution idempotency keys to local durable storage for restart recovery.
+3. Enforces minimum history per symbol/timeframe before evaluating entries/exits.
+4. Computes per-symbol signals with multi-timeframe features.
+5. Runs risk checks (daily loss, drawdown, max trades/day, ATR circuit breaker, kill switch).
+6. If risk breach and `LIQUIDATE_ON_RISK=true`, liquidates BTC/ETH to USDT.
+7. Otherwise allocates capital between BTC and ETH via score-based allocator.
+8. Rebalances inventory with spot-only buy/sell orders.
+9. If `READ_ONLY_MODE=true`, it logs planned orders but skips execution.
+10. Persists runtime state and execution idempotency keys to local durable storage for restart recovery.
 
 If no new fast candle arrives and `SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY=true`, the cycle logs:
 - `cycle_skipped_no_new_candle`
+
+If per-symbol candle history is below configured minimums (`SIGNAL_MIN_FAST_CANDLES`, `SIGNAL_MIN_SLOW_CANDLES`), signal evaluation is downgraded to safe hold and logs:
+- `history_insufficient_for_signal`
 
 ## SignalEngine
 
@@ -55,16 +59,18 @@ Where:
   - `observedEdgePct = atrPct * sqrt(holdingBars)`
   - `holdingBars = max(1, MIN_HOLD_MINUTES / fastTfMinutes)`
 - `requiredEdgePct` is derived from round-trip cost:
-  - `roundTripCostPct = (2 * feeBps + spreadBps) / 100`
+  - `effectiveSpreadBps` comes from live quote spread (`ask-bid`) when available, fallback to `PAPER_SPREAD_BPS`
+  - `roundTripCostPct = (2 * feeBps + effectiveSpreadBps) / 100`
   - `requiredEdgePctRaw = roundTripCostPct * SIGNAL_MIN_EDGE_MULTIPLIER * timeframeScale`
   - `timeframeScale = clamp(sqrt(fastTfMinutes / 15), 0.2, 2.0)`
   - optional cap: `requiredEdgePct = min(requiredEdgePctRaw, SIGNAL_EDGE_PCT_CAP)` if cap > 0
 
 Logs include:
-- `passScore`, `passEdge`
+- `historyReady`, `passScore`, `passEdge`
+- `observedSpreadBps`, `effectiveSpreadBps`
 - `observedEdgePct`, `observedSingleBarEdgePct`, `holdingBars`
 - `requiredEdgePct`, `edgeBufferPct`, `timeframeMinutes`, `timeframeScale`
-- suppression reason: `insufficient_score` or `insufficient_edge`
+- suppression reason: `insufficient_history`, `insufficient_score`, `insufficient_edge`
 - per-cycle `entry_gate_diagnostics` summary
 
 ### Profiles (`--profile`)
@@ -125,6 +131,8 @@ Rules:
 - Weights are computed from score strength.
 - `ALLOCATOR_MAX_EXPOSURE_TOTAL` caps total non-USDT exposure.
 - `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL` caps each symbol.
+- Optional conviction scaling (`ALLOCATOR_CONVICTION_SCALING`) shrinks total risk budget when scores are only marginally above `ALLOCATOR_MIN_SCORE_TO_INVEST`.
+- `ALLOCATOR_CONVICTION_MIN_SCALE` defines the minimum fraction of total risk budget when conviction is low.
 - Rebalance only when change exceeds `ALLOCATOR_REBALANCE_THRESHOLD`.
 - If scores are weak, allocation moves to USDT.
 
@@ -153,6 +161,7 @@ When violated:
 - Pre-flight risk validation runs before each order (daily loss, drawdown, notional caps).
 - Quote staleness is validated immediately before order submission; stale quotes are refreshed or order is blocked.
 - Fees are reconciled from adapter/exchange-reported commission when available (fallback: configured `feeBps` estimate).
+- Binance order status normalization maps exchange statuses (`filled`, `closed`, `canceled`, `expired`, `rejected`) to internal canonical statuses consistently.
 - Binance order requests are normalized against venue filters (`LOT_SIZE`, `PRICE_FILTER`, `MIN_NOTIONAL`) before sending.
 
 ## Metrics and reports (paper/backtest)
@@ -169,6 +178,7 @@ Reported metrics include:
 - Trades by symbol
 - `noTradeReasonCounts` by symbol:
 - `regime_neutral`
+- `insufficient_history`
 - `insufficient_score`
 - `insufficient_edge`
 - `allocator_threshold`

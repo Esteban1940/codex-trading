@@ -35,6 +35,16 @@ Required env values:
 - `PAPER_INITIAL_USDT` to mirror your paper account size (example `94`)
 - `MIN_NOTIONAL_USDT` to enforce min order notional (default `10`)
 - Ensure `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equity >= MIN_NOTIONAL_USDT` (for ~94 USDT, use at least `0.11` per symbol)
+- Minimum history gates before signal evaluation:
+  - `SIGNAL_MIN_FAST_CANDLES` (default `80`)
+  - `SIGNAL_MIN_SLOW_CANDLES` (default `80`)
+- Conviction-based risk scaling:
+  - `ALLOCATOR_CONVICTION_SCALING=true`
+  - `ALLOCATOR_CONVICTION_MIN_SCALE=0.35`
+- Worker resilience/backoff:
+  - `WORKER_ERROR_BACKOFF_MS=5000`
+  - `WORKER_ERROR_BACKOFF_JITTER_MS=500`
+  - `WORKER_MAX_CONSECUTIVE_ERRORS=10`
 - For strict live preflight on micro-capital, set `LIVE_EQUITY_REFERENCE_USDT` to current equity
 - Live conservative limits are validated at startup (`LIVE_REQUIRE_CONSERVATIVE_LIMITS=true`)
 - Market-shock circuit breaker is configurable (`RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT`)
@@ -116,9 +126,12 @@ Paper/backtest report:
 ## Tests and checks
 
 ```bash
+pnpm run typecheck
+pnpm run lint
+pnpm run test
+pnpm run test:coverage
 pnpm run preflight
 pnpm run preflight:strict
-pnpm run test:coverage
 ```
 
 `preflight` accepts either `.env` or process env variables. If `BINANCE_*_FILE` is set, it validates that secret files are readable.
@@ -196,3 +209,7 @@ If runtime returns Binance `-2015`:
 - The Binance adapter now fetches the most recent OHLCV window each cycle (avoids stale candle windows).
 - Entry edge gating scales by fast timeframe so `1m/5m` tests are not blocked by a `15m`-sized threshold.
 - Entry edge now uses expected hold horizon (`ATR * sqrt(holdingBars)`) instead of single-bar ATR only.
+- Signal evaluation now enforces minimum candle history before allowing entries/exits (`SIGNAL_MIN_FAST_CANDLES`, `SIGNAL_MIN_SLOW_CANDLES`).
+- BTC/ETH history windows are mapped by symbol key (safe even if `SYMBOLS` env order is reversed).
+- Allocation now scales total risk budget by conviction, reducing over-allocation on marginal setups.
+- Worker now applies error backoff with jitter and only stops after configurable consecutive failures.

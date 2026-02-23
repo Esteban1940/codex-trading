@@ -3,6 +3,8 @@
   maxExposurePerSymbol: number;
   rebalanceThreshold: number;
   minScoreToInvest: number;
+  convictionScaling?: boolean;
+  convictionMinScale?: number;
 }
 
 export interface AllocationInput {
@@ -14,6 +16,10 @@ export interface AllocationTarget {
   weights: Record<"BTC/USDT" | "ETH/USDT" | "USDT", number>;
   shouldRebalance: boolean;
   reason: string;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 export class PortfolioAllocator {
@@ -38,7 +44,9 @@ export class PortfolioAllocator {
       };
     }
 
-    const totalRiskBudget = this.cfg.maxExposureTotal;
+    const convictionScale = this.convictionScale(Math.max(btcScore, ethScore));
+    const totalRiskBudget = this.cfg.maxExposureTotal * convictionScale;
+
     let btcW = (btcScore / positive) * totalRiskBudget;
     let ethW = (ethScore / positive) * totalRiskBudget;
 
@@ -63,7 +71,7 @@ export class PortfolioAllocator {
     return {
       weights: target,
       shouldRebalance: this.shouldRebalance(input.currentWeights, target),
-      reason: "Risk-adjusted score allocation"
+      reason: `Risk-adjusted score allocation (convictionScale=${convictionScale.toFixed(2)})`
     };
   }
 
@@ -74,5 +82,14 @@ export class PortfolioAllocator {
     const deltaBtc = Math.abs(current["BTC/USDT"] - target["BTC/USDT"]);
     const deltaEth = Math.abs(current["ETH/USDT"] - target["ETH/USDT"]);
     return Math.max(deltaBtc, deltaEth) >= this.cfg.rebalanceThreshold;
+  }
+
+  private convictionScale(maxScore: number): number {
+    if (!this.cfg.convictionScaling) return 1;
+
+    const minScale = clamp(this.cfg.convictionMinScale ?? 0.35, 0.05, 1);
+    const threshold = clamp(this.cfg.minScoreToInvest, 0, 0.99);
+    const normalized = clamp((maxScore - threshold) / Math.max(1e-6, 1 - threshold), 0, 1);
+    return minScale + (1 - minScale) * normalized;
   }
 }

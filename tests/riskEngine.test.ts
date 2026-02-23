@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { RiskEngine } from "../src/core/risk/riskEngine.js";
 
 describe("RiskEngine portfolio triggers", () => {
@@ -147,5 +147,34 @@ describe("RiskEngine portfolio triggers", () => {
         }
       )
     ).not.toThrow();
+  });
+
+  it("applies slippage stress to buy notional pre-check", () => {
+    const engine = new RiskEngine({
+      ...base,
+      maxNotionalPerSymbolUsd: 100,
+      maxNotionalPerMarketUsd: 200
+    });
+
+    expect(() =>
+      engine.evaluateOrder(
+        {
+          symbol: "ETH/USDT",
+          side: "buy",
+          type: "market",
+          quantity: 1,
+          clientOrderId: "buy-stress-check"
+        },
+        95,
+        [],
+        {
+          dayLossUsd: 0,
+          drawdownPct: 0,
+          openPositions: 0,
+          marketExposureUsd: { iol: 0, crypto: 0 }
+        },
+        { slippageStressBps: 1000 }
+      )
+    ).toThrow(/Max symbol notional/);
   });
 });

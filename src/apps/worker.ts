@@ -1,6 +1,8 @@
-﻿import { config } from "../infra/config.js";
+import path from "node:path";
+import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
 import { assertConservativeLiveConfig } from "../infra/liveSafety.js";
+import { SqlitePersistence } from "../infra/db/persistence.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
 import { MockExchangeAdapter } from "../adapters/mock/mockExchangeAdapter.js";
@@ -9,6 +11,15 @@ import { PortfolioAllocator } from "../core/portfolio/portfolioAllocator.js";
 import { InventoryManager } from "../core/inventory/inventoryManager.js";
 import { RiskEngine } from "../core/risk/riskEngine.js";
 import { BinanceSpotBot, type SupportedSymbol } from "../core/trading/binanceSpotBot.js";
+
+function deriveExecutionStorePath(sqlitePath: string): string {
+  const parsed = path.parse(sqlitePath);
+  const stem = path.join(parsed.dir, parsed.name || "trading");
+  return `${stem}.execution-store.json`;
+}
+
+const persistence = new SqlitePersistence(config.SQLITE_PATH);
+const executionStorePath = deriveExecutionStorePath(config.SQLITE_PATH);
 
 function parseSymbols(raw: string): SupportedSymbol[] {
   const parsed = raw
@@ -81,9 +92,9 @@ const bot = new BinanceSpotBot(
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT
   }),
-  {
-    symbols: parseSymbols(config.SYMBOLS),
-    timeframes: parseTimeframes(config.TIMEFRAMES),
+    {
+      symbols: parseSymbols(config.SYMBOLS),
+      timeframes: parseTimeframes(config.TIMEFRAMES),
     maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
     minNotionalUsdt: config.MIN_NOTIONAL_USDT,
     feeBps: config.DEFAULT_FEE_BPS,
@@ -105,12 +116,16 @@ const bot = new BinanceSpotBot(
     starvationFloorRegimeEntryMin: config.STARVATION_FLOOR_REGIME_ENTRY_MIN,
     entryOrderType: config.EXEC_ENTRY_ORDER_TYPE,
     entryLimitOffsetBps: config.EXEC_ENTRY_LIMIT_OFFSET_BPS,
-    entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
-    exitOrderType: config.EXEC_EXIT_ORDER_TYPE,
-    liveTrading: config.LIVE_TRADING,
-    readOnlyMode: config.READ_ONLY_MODE
-  }
-);
+      entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
+      exitOrderType: config.EXEC_EXIT_ORDER_TYPE,
+      liveTrading: config.LIVE_TRADING,
+      readOnlyMode: config.READ_ONLY_MODE,
+      executionStorePath,
+      quoteMaxAgeMs: 5_000,
+      riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10)
+    },
+    persistence
+  );
 
 async function main(): Promise<void> {
   logger.info({

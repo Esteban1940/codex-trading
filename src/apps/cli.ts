@@ -1,7 +1,9 @@
-﻿import { Command } from "commander";
+import path from "node:path";
+import { Command } from "commander";
 import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
 import { assertConservativeLiveConfig } from "../infra/liveSafety.js";
+import { SqlitePersistence } from "../infra/db/persistence.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
 import { PaperSimRealDataAdapter } from "../adapters/crypto/paperSimRealDataAdapter.js";
@@ -29,6 +31,12 @@ interface RuntimeOverrides {
   riskMaxTradesPerDay?: number;
   minHoldMinutes?: number;
   paperSpreadBps?: number;
+}
+
+function deriveExecutionStorePath(sqlitePath: string): string {
+  const parsed = path.parse(sqlitePath);
+  const stem = path.join(parsed.dir, parsed.name || "trading");
+  return `${stem}.execution-store.json`;
 }
 
 function parseSymbols(raw: string): SupportedSymbol[] {
@@ -129,6 +137,8 @@ function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; ove
       })
     : baseAdapter;
   const effectiveReadOnlyMode = params.paperSimRealData ? false : config.READ_ONLY_MODE;
+  const persistence = new SqlitePersistence(config.SQLITE_PATH);
+  const executionStorePath = deriveExecutionStorePath(config.SQLITE_PATH);
 
   return new BinanceSpotBot(
     adapter,
@@ -163,8 +173,12 @@ function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; ove
       entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
       exitOrderType: config.EXEC_EXIT_ORDER_TYPE,
       liveTrading: config.LIVE_TRADING,
-      readOnlyMode: effectiveReadOnlyMode
-    }
+      readOnlyMode: effectiveReadOnlyMode,
+      executionStorePath,
+      quoteMaxAgeMs: 5_000,
+      riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10)
+    },
+    persistence
   );
 }
 

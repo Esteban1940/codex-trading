@@ -1,4 +1,6 @@
-﻿import { logger } from "../../infra/logger.js";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { logger } from "../../infra/logger.js";
 import type { BrokerAdapter, ExchangeAdapter } from "../interfaces.js";
 import type { Order, PlaceOrderRequest } from "../domain/types.js";
 
@@ -9,11 +11,66 @@ interface ExecutionStore {
 
 export class InMemoryExecutionStore implements ExecutionStore {
   private readonly orders = new Map<string, Order>();
+
   get(clientOrderId: string): Order | undefined {
     return this.orders.get(clientOrderId);
   }
+
   put(clientOrderId: string, order: Order): void {
     this.orders.set(clientOrderId, order);
+  }
+}
+
+interface PersistedExecutionStore {
+  version: 1;
+  orders: Record<string, Order>;
+}
+
+export class FileExecutionStore implements ExecutionStore {
+  private readonly orders = new Map<string, Order>();
+
+  constructor(private readonly filePath: string) {
+    this.load();
+  }
+
+  get(clientOrderId: string): Order | undefined {
+    return this.orders.get(clientOrderId);
+  }
+
+  put(clientOrderId: string, order: Order): void {
+    this.orders.set(clientOrderId, order);
+    this.flush();
+  }
+
+  private load(): void {
+    try {
+      const raw = readFileSync(this.filePath, "utf8");
+      const parsed = JSON.parse(raw) as Partial<PersistedExecutionStore>;
+      if (!parsed || parsed.version !== 1 || !parsed.orders || typeof parsed.orders !== "object") return;
+
+      for (const [clientOrderId, order] of Object.entries(parsed.orders)) {
+        this.orders.set(clientOrderId, order);
+      }
+    } catch {
+      return;
+    }
+  }
+
+  private flush(): void {
+    try {
+      mkdirSync(path.dirname(this.filePath), { recursive: true });
+      const payload: PersistedExecutionStore = {
+        version: 1,
+        orders: Object.fromEntries(this.orders.entries())
+      };
+      writeFileSync(this.filePath, JSON.stringify(payload, null, 2), "utf8");
+    } catch (error) {
+      logger.warn({
+        event: "execution_store_flush_failed",
+        filePath: this.filePath,
+        reason: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 }
 

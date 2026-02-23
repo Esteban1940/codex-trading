@@ -22,6 +22,10 @@ export interface PortfolioRiskState {
   atrPct: number;
 }
 
+export interface OrderRiskOptions {
+  slippageStressBps?: number;
+}
+
 export class RiskEngine {
   constructor(private readonly limits: RiskLimits) {}
 
@@ -72,7 +76,13 @@ export class RiskEngine {
     };
   }
 
-  evaluateOrder(request: PlaceOrderRequest, quotePrice: number, positions: Position[], riskSnapshot: RiskSnapshot): void {
+  evaluateOrder(
+    request: PlaceOrderRequest,
+    quotePrice: number,
+    positions: Position[],
+    riskSnapshot: RiskSnapshot,
+    options: OrderRiskOptions = {}
+  ): void {
     const isRiskReducingSell = request.side === "sell";
 
     // Risk-reducing sells must remain possible even during hard risk events.
@@ -85,7 +95,13 @@ export class RiskEngine {
 
     if (request.quantity <= 0) throw new Error("Quantity must be > 0.");
 
-    const refPrice = request.price ?? quotePrice;
+    const slippageStressRate = Math.max(0, options.slippageStressBps ?? 0) / 10_000;
+    const baseRefPrice = request.price ?? quotePrice;
+    const stressedRefPrice =
+      request.side === "buy" ? baseRefPrice * (1 + slippageStressRate) : baseRefPrice * (1 - slippageStressRate);
+    const refPrice = Math.max(0, stressedRefPrice);
+
+    if (!isRiskReducingSell && refPrice <= 0) throw new Error("Reference price must be > 0.");
     const notional = refPrice * request.quantity;
     if (!isRiskReducingSell) {
       if (notional > this.limits.maxNotionalPerSymbolUsd) throw new Error("Max symbol notional exceeded.");

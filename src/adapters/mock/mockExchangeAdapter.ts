@@ -1,4 +1,4 @@
-﻿import { config } from "../../infra/config.js";
+import { config } from "../../infra/config.js";
 import type { ExchangeAdapter } from "../../core/interfaces.js";
 import type { Candle, Order, PlaceOrderRequest, Quote } from "../../core/domain/types.js";
 import { MockBrokerAdapter } from "./mockBrokerAdapter.js";
@@ -162,6 +162,7 @@ export class MockExchangeAdapter extends MockBrokerAdapter implements ExchangeAd
       order.status = "rejected";
       order.filledQuantity = 0;
       order.price = fillPrice;
+      order.fees = undefined;
       return;
     }
 
@@ -173,10 +174,12 @@ export class MockExchangeAdapter extends MockBrokerAdapter implements ExchangeAd
         order.status = "rejected";
         order.filledQuantity = 0;
         order.price = fillPrice;
+        order.fees = undefined;
         return;
       }
       this.balances.USDT -= totalCost;
       this.balances[base] = (this.balances[base] ?? 0) + requestedQty;
+      order.fees = fee > 0 ? [{ asset: "USDT", amount: fee }] : undefined;
     } else {
       const available = this.balances[base] ?? 0;
       const qty = Math.min(requestedQty, available);
@@ -184,6 +187,7 @@ export class MockExchangeAdapter extends MockBrokerAdapter implements ExchangeAd
         order.status = "rejected";
         order.filledQuantity = 0;
         order.price = fillPrice;
+        order.fees = undefined;
         return;
       }
       const gross = qty * fillPrice;
@@ -194,6 +198,7 @@ export class MockExchangeAdapter extends MockBrokerAdapter implements ExchangeAd
       order.filledQuantity = qty;
       order.price = fillPrice;
       order.status = "filled";
+      order.fees = fee > 0 ? [{ asset: "USDT", amount: fee }] : undefined;
       return;
     }
 

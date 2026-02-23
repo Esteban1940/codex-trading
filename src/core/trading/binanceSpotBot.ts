@@ -1,11 +1,13 @@
-﻿import { logger } from "../../infra/logger.js";
+import { createHash } from "node:crypto";
+import type { Persistence } from "../../infra/db/persistence.js";
+import { logger } from "../../infra/logger.js";
 import type { ExchangeAdapter } from "../interfaces.js";
-import type { PlaceOrderRequest, Position, RiskSnapshot } from "../domain/types.js";
+import type { Order, PlaceOrderRequest, Position, Quote, RiskSnapshot } from "../domain/types.js";
 import { SignalEngine } from "../signal/signalEngine.js";
 import { PortfolioAllocator } from "../portfolio/portfolioAllocator.js";
 import { InventoryManager, type Holdings } from "../inventory/inventoryManager.js";
 import { RiskEngine } from "../risk/riskEngine.js";
-import { ExecutionEngine } from "../execution/executionEngine.js";
+import { ExecutionEngine, FileExecutionStore } from "../execution/executionEngine.js";
 
 export type SupportedSymbol = "BTC/USDT" | "ETH/USDT";
 
@@ -37,6 +39,11 @@ interface BotConfig {
   exitOrderType: "market" | "limit";
   liveTrading: boolean;
   readOnlyMode: boolean;
+  quoteMaxAgeMs?: number;
+  riskOrderSlippageStressBps?: number;
+  executionStorePath?: string;
+  runId?: string;
+  runtimeStateKey?: string;
 }
 
 export interface BotReport {
@@ -92,6 +99,7 @@ interface QuoteSnapshot {
   last: number;
   bid: number;
   ask: number;
+  ts: number;
 }
 
 type SignalSummary = {
@@ -214,7 +222,11 @@ function toHoldings(balances: Record<string, number>): Holdings {
 
 export class BinanceSpotBot {
   private readonly execution: ExecutionEngine;
-  private readonly state: RuntimeState;
+  private state: RuntimeState;
+  private readonly runId: string;
+  private readonly runtimeStateKey: string;
+  private stateHydrated = false;
+  private cycleSequence = 0;
 
   constructor(
     private readonly adapter: ExchangeAdapter,
@@ -222,9 +234,16 @@ export class BinanceSpotBot {
     private readonly allocator: PortfolioAllocator,
     private readonly inventory: InventoryManager,
     private readonly riskEngine: RiskEngine,
-    private readonly cfg: BotConfig
+    private readonly cfg: BotConfig,
+    private readonly persistence?: Persistence
   ) {
-    this.execution = new ExecutionEngine(adapter);
+    this.execution = this.cfg.executionStorePath
+      ? new ExecutionEngine(adapter, new FileExecutionStore(this.cfg.executionStorePath))
+      : new ExecutionEngine(adapter);
+    this.runId =
+      this.cfg.runId?.trim() ||
+      `run-${Date.now().toString(36)}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
+    this.runtimeStateKey = this.cfg.runtimeStateKey?.trim() || "binance_spot_bot_runtime_v1";
     const now = Date.now();
     this.state = {
       startedAtMs: now,
@@ -266,6 +285,9 @@ export class BinanceSpotBot {
 
   async runCycle(): Promise<void> {
     const now = Date.now();
+    await this.hydrateStateIfNeeded(now);
+    const cycleId = this.nextCycleId(now);
+    const logContext = { runId: this.runId, cycleId };
     const [tfFast, tfSlow] = this.cfg.timeframes;
 
     const quotesBefore = await this.fetchQuotes();
@@ -311,15 +333,19 @@ export class BinanceSpotBot {
     const hasNewFastCandle = this.hasNewFastCandle(latestFastCandleTs);
 
     if (this.cfg.evalOnFastCandleCloseOnly && !hasNewFastCandle) {
-      logger.info({
+      const skippedPayload = {
         event: "cycle_skipped_no_new_candle",
+        ...logContext,
         timeframe: tfFast,
         latestFastCandleTs,
         previousFastCandleTs: this.state.lastFastCandleTs
-      });
+      };
+      logger.info(skippedPayload);
+      await this.recordEvent("cycle_skipped_no_new_candle", skippedPayload);
       this.updatePerformance(equityBefore);
-      logger.info({
+      const cycleStatePayload = {
         event: "cycle_state",
+        ...logContext,
         balances: {
           usdtFree: holdingsBefore.USDT,
           btcFree: holdingsBefore.BTC,
@@ -328,7 +354,10 @@ export class BinanceSpotBot {
         prices: lastPricesBefore,
         equityUsdt: equityBefore,
         feesPaidUsdt: this.state.feesPaidUsdt
-      });
+      };
+      logger.info(cycleStatePayload);
+      await this.recordEvent("cycle_state", cycleStatePayload);
+      await this.persistRuntimeState();
       return;
     }
 
@@ -360,11 +389,14 @@ export class BinanceSpotBot {
       })
     };
 
-    logger.info({
+    const signalDecisionPayload = {
       event: "signal_decisions",
+      ...logContext,
       thresholds: this.state.dynamicThresholds,
       signals: { btc: signals["BTC/USDT"], eth: signals["ETH/USDT"] }
-    });
+    };
+    logger.info(signalDecisionPayload);
+    await this.recordEvent("signal_decisions", signalDecisionPayload);
 
     for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
       if (signals[symbol].features.trendRegime === "neutral") {
@@ -388,12 +420,20 @@ export class BinanceSpotBot {
     const minHoldProtected = this.getMinHoldProtectedSymbols(now, currentWeights);
     const exitSymbols = new Set<SupportedSymbol>();
     const exitSuppressed: Array<{ symbol: SupportedSymbol; reason: string }> = [];
+    const deRiskCaps: Partial<Record<SupportedSymbol, number>> = {};
 
     for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
       if (signals[symbol].action !== "exit") continue;
       const strongExit =
         (signals[symbol].features.regimeScore ?? 0) <= -0.55 || signals[symbol].features.momentumScore <= -0.6;
       if (minHoldProtected.has(symbol) && !strongExit) {
+        const riskDeteriorating =
+          (signals[symbol].features.regimeScore ?? 0) <= -0.2 || signals[symbol].features.momentumScore <= -0.35;
+        if (riskDeteriorating && currentWeights[symbol] > 0.01) {
+          deRiskCaps[symbol] = Math.max(0, currentWeights[symbol] * 0.5);
+          exitSuppressed.push({ symbol, reason: "min_hold_partial_derisk" });
+          continue;
+        }
         const reason = "min_hold_active_without_strong_exit";
         exitSuppressed.push({ symbol, reason });
         this.incrementNoTradeReason(symbol, "min_hold");
@@ -414,7 +454,9 @@ export class BinanceSpotBot {
     let entryFilledThisCycle = false;
 
     if (risk.forceLiquidate) {
-      logger.warn({ event: "risk_liquidation", reasons: risk.reasons });
+      const riskLiquidationPayload = { event: "risk_liquidation", ...logContext, reasons: risk.reasons };
+      logger.warn(riskLiquidationPayload);
+      await this.recordEvent("risk_liquidation", riskLiquidationPayload);
       orders = this.inventory.planLiquidation(holdingsBefore, lastPricesBefore);
     } else {
       if (!allowEntries) {
@@ -477,7 +519,8 @@ export class BinanceSpotBot {
         }
       }
 
-      const adjustedTarget = this.applyCooldownProtection(allocation.weights, currentWeights, cooldownProtected);
+      const cooldownAdjustedTarget = this.applyCooldownProtection(allocation.weights, currentWeights, cooldownProtected);
+      const adjustedTarget = this.applyDeRiskCaps(cooldownAdjustedTarget, deRiskCaps);
       const shouldRebalance = this.allocator.shouldRebalance(currentWeights, adjustedTarget);
 
       if (allocation.reason.includes("Scores below invest threshold")) {
@@ -488,25 +531,33 @@ export class BinanceSpotBot {
         }
       }
 
-      logger.info({
+      const allocationDecisionPayload = {
         event: "allocation_decision",
+        ...logContext,
         allocation,
         adjustedTarget,
         currentWeights,
         cooldownProtected: Array.from(cooldownProtected.values()),
         minHoldProtected: Array.from(minHoldProtected.values()),
+        deRiskCaps,
         entrySuppressed,
         entryGate,
         exitSuppressed
-      });
-      logger.info({
+      };
+      logger.info(allocationDecisionPayload);
+      await this.recordEvent("allocation_decision", allocationDecisionPayload);
+
+      const entryGateDiagnosticsPayload = {
         event: "entry_gate_diagnostics",
+        ...logContext,
         thresholds: this.state.dynamicThresholds,
         diagnostics: {
           "BTC/USDT": this.toEntryGateDiagnostic(signals["BTC/USDT"], entryGate["BTC/USDT"], allowEntries),
           "ETH/USDT": this.toEntryGateDiagnostic(signals["ETH/USDT"], entryGate["ETH/USDT"], allowEntries)
         }
-      });
+      };
+      logger.info(entryGateDiagnosticsPayload);
+      await this.recordEvent("entry_gate_diagnostics", entryGateDiagnosticsPayload);
 
       if (shouldRebalance || exitSymbols.size > 0) {
         orders = this.inventory.planRebalance({
@@ -519,20 +570,26 @@ export class BinanceSpotBot {
         });
       }
       if (!allowEntries) {
-        logger.warn({
+        const riskBlockPayload = {
           event: "risk_block_entries_only",
+          ...logContext,
           reasons: risk.reasons,
           note: "entries blocked, exits/reduction still allowed"
-        });
+        };
+        logger.warn(riskBlockPayload);
+        await this.recordEvent("risk_block_entries_only", riskBlockPayload);
       }
     }
 
     if (orders.length > 0 && this.cfg.readOnlyMode) {
-      logger.warn({
+      const readOnlyPayload = {
         event: "read_only_orders_skipped",
+        ...logContext,
         reason: "READ_ONLY_MODE=true",
         orders
-      });
+      };
+      logger.warn(readOnlyPayload);
+      await this.recordEvent("read_only_orders_skipped", readOnlyPayload);
       orders = [];
     }
 
@@ -540,14 +597,36 @@ export class BinanceSpotBot {
     const projectedPositions = this.toPositions(holdingsBefore);
 
     for (const planned of orders) {
-      const lastPrice = lastPricesBefore[planned.symbol] ?? 0;
+      const quoteForOrder = await this.ensureFreshQuoteForOrder(planned.symbol, quotesBefore, lastPricesBefore);
+      if (!quoteForOrder) {
+        const staleQuotePayload = {
+          event: "order_blocked_stale_quote",
+          ...logContext,
+          planned,
+          maxQuoteAgeMs: this.effectiveQuoteMaxAgeMs()
+        };
+        logger.warn(staleQuotePayload);
+        await this.recordEvent("order_blocked_stale_quote", staleQuotePayload);
+        continue;
+      }
+
+      const lastPrice = lastPricesBefore[planned.symbol] ?? quoteForOrder.last;
+      const intentCandleTs = this.state.lastFastCandleTs[planned.symbol] ?? 0;
       const orderReq: PlaceOrderRequest = {
         symbol: planned.symbol,
         side: planned.side,
         type: planned.type,
         price: planned.price,
         quantity: Number(planned.quantity.toFixed(6)),
-        clientOrderId: `${planned.symbol.replace("/", "")}-${planned.side}-${now}-${Math.floor(Math.random() * 1000)}`
+        clientOrderId: this.buildDeterministicClientOrderId({
+          symbol: planned.symbol,
+          side: planned.side,
+          type: planned.type,
+          quantity: Number(planned.quantity.toFixed(6)),
+          price: planned.price,
+          reason: planned.reason,
+          candleTs: intentCandleTs
+        })
       };
 
       const riskSnapshot: RiskSnapshot = {
@@ -564,14 +643,19 @@ export class BinanceSpotBot {
       };
 
       try {
-        this.riskEngine.evaluateOrder(orderReq, lastPrice, projectedPositions, riskSnapshot);
+        this.riskEngine.evaluateOrder(orderReq, lastPrice, projectedPositions, riskSnapshot, {
+          slippageStressBps: this.cfg.riskOrderSlippageStressBps ?? this.cfg.slippageBps
+        });
       } catch (error) {
-        logger.warn({
+        const riskPrecheckPayload = {
           event: "order_blocked_risk_precheck",
+          ...logContext,
           planned,
           reason: error instanceof Error ? error.message : String(error),
           riskSnapshot
-        });
+        };
+        logger.warn(riskPrecheckPayload);
+        await this.recordEvent("order_blocked_risk_precheck", riskPrecheckPayload);
         continue;
       }
 
@@ -590,8 +674,7 @@ export class BinanceSpotBot {
       }
 
       const fillPrice = result.price ?? lastPrice;
-      const tradedNotional = fillPrice * Math.max(result.filledQuantity, result.quantity);
-      const fee = tradedNotional * (this.cfg.feeBps / 10_000);
+      const fee = this.resolveOrderFeeUsdt(result, fillPrice, quotesBefore, lastPrice);
       this.state.feesPaidUsdt += fee;
       this.state.totalTrades += 1;
       this.state.tradesToday += 1;
@@ -610,7 +693,9 @@ export class BinanceSpotBot {
         projectedExposureCrypto + (planned.side === "buy" ? filledNotional : -filledNotional)
       );
 
-      logger.info({ event: "order_executed", planned, result, fee });
+      const orderExecutedPayload = { event: "order_executed", ...logContext, planned, result, fee };
+      logger.info(orderExecutedPayload);
+      await this.recordEvent("order_executed", orderExecutedPayload);
     }
 
     const quotesAfter = await this.fetchQuotes();
@@ -623,8 +708,9 @@ export class BinanceSpotBot {
     this.updatePerformance(equityAfter);
     this.updateStarvationState(hasNewFastCandle, entryAttemptedThisCycle, entryFilledThisCycle);
 
-    logger.info({
+    const cycleStatePayload = {
       event: "cycle_state",
+      ...logContext,
       balances: {
         usdtFree: holdingsAfter.USDT,
         btcFree: holdingsAfter.BTC,
@@ -633,7 +719,10 @@ export class BinanceSpotBot {
       prices: lastPricesAfter,
       equityUsdt: equityAfter,
       feesPaidUsdt: this.state.feesPaidUsdt
-    });
+    };
+    logger.info(cycleStatePayload);
+    await this.recordEvent("cycle_state", cycleStatePayload);
+    await this.persistRuntimeState();
   }
 
   getReport(): BotReport {
@@ -692,12 +781,14 @@ export class BinanceSpotBot {
       "BTC/USDT": {
         last: quotes.find((q) => q.symbol === "BTC/USDT")?.last ?? 0,
         bid: quotes.find((q) => q.symbol === "BTC/USDT")?.bid ?? 0,
-        ask: quotes.find((q) => q.symbol === "BTC/USDT")?.ask ?? 0
+        ask: quotes.find((q) => q.symbol === "BTC/USDT")?.ask ?? 0,
+        ts: quotes.find((q) => q.symbol === "BTC/USDT")?.ts ?? Date.now()
       },
       "ETH/USDT": {
         last: quotes.find((q) => q.symbol === "ETH/USDT")?.last ?? 0,
         bid: quotes.find((q) => q.symbol === "ETH/USDT")?.bid ?? 0,
-        ask: quotes.find((q) => q.symbol === "ETH/USDT")?.ask ?? 0
+        ask: quotes.find((q) => q.symbol === "ETH/USDT")?.ask ?? 0,
+        ts: quotes.find((q) => q.symbol === "ETH/USDT")?.ts ?? Date.now()
       }
     };
   }
@@ -787,7 +878,15 @@ export class BinanceSpotBot {
   ): Set<SupportedSymbol> {
     const out = new Set<SupportedSymbol>();
     for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
-      if (signals[symbol].action === "hold" && signals[symbol].cooldownActive && currentWeights[symbol] > 0.01) {
+      const regimeScore = signals[symbol].features.regimeScore ?? 0;
+      const momentumScore = signals[symbol].features.momentumScore;
+      const deteriorating = regimeScore < 0 || momentumScore < -0.2;
+      if (
+        signals[symbol].action === "hold" &&
+        signals[symbol].cooldownActive &&
+        currentWeights[symbol] > 0.01 &&
+        !deteriorating
+      ) {
         out.add(symbol);
       }
     }
@@ -908,6 +1007,31 @@ export class BinanceSpotBot {
       out.USDT += 1 - sum;
     }
 
+    return out;
+  }
+
+  private applyDeRiskCaps(
+    target: Record<SupportedSymbol | "USDT", number>,
+    deRiskCaps: Partial<Record<SupportedSymbol, number>>
+  ): Record<SupportedSymbol | "USDT", number> {
+    const out = { ...target };
+
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      const cap = deRiskCaps[symbol];
+      if (cap === undefined) continue;
+      out[symbol] = Math.max(out[symbol], Math.max(0, cap));
+    }
+
+    const exposed = out["BTC/USDT"] + out["ETH/USDT"];
+    if (exposed > 1) {
+      const scale = 1 / exposed;
+      out["BTC/USDT"] *= scale;
+      out["ETH/USDT"] *= scale;
+      out.USDT = 0;
+      return out;
+    }
+
+    out.USDT = Math.max(0, 1 - exposed);
     return out;
   }
 
@@ -1048,6 +1172,193 @@ export class BinanceSpotBot {
     const baselineMinutes = 15;
     const rawScale = Math.sqrt(Math.max(1, timeframeMinutes) / baselineMinutes);
     return Math.min(2, Math.max(0.2, rawScale));
+  }
+
+  private nextCycleId(nowTs: number): string {
+    this.cycleSequence += 1;
+    return `${this.runId}-${nowTs}-${this.cycleSequence}`;
+  }
+
+  private effectiveQuoteMaxAgeMs(): number {
+    return Math.max(250, this.cfg.quoteMaxAgeMs ?? 5_000);
+  }
+
+  private async ensureFreshQuoteForOrder(
+    symbol: SupportedSymbol,
+    quotes: Record<SupportedSymbol, QuoteSnapshot>,
+    lastPrices: Record<SupportedSymbol, number>
+  ): Promise<QuoteSnapshot | undefined> {
+    const current = quotes[symbol];
+    const nowTs = Date.now();
+    const ageMs = nowTs - current.ts;
+    if (ageMs <= this.effectiveQuoteMaxAgeMs()) {
+      return current;
+    }
+
+    logger.warn({
+      event: "quote_stale_before_order",
+      runId: this.runId,
+      symbol,
+      quoteTs: current.ts,
+      ageMs,
+      maxQuoteAgeMs: this.effectiveQuoteMaxAgeMs()
+    });
+
+    const refreshed = await this.adapter.getQuote(symbol);
+    const snapshot = this.toQuoteSnapshot(refreshed);
+    quotes[symbol] = snapshot;
+    lastPrices[symbol] = snapshot.last;
+
+    const refreshedAgeMs = Date.now() - snapshot.ts;
+    if (refreshedAgeMs > this.effectiveQuoteMaxAgeMs()) {
+      return undefined;
+    }
+    return snapshot;
+  }
+
+  private toQuoteSnapshot(quote: Quote): QuoteSnapshot {
+    return {
+      last: Number(quote.last ?? 0),
+      bid: Number(quote.bid ?? 0),
+      ask: Number(quote.ask ?? 0),
+      ts: Number.isFinite(quote.ts) ? quote.ts : Date.now()
+    };
+  }
+
+  private buildDeterministicClientOrderId(params: {
+    symbol: SupportedSymbol;
+    side: "buy" | "sell";
+    type: "market" | "limit";
+    quantity: number;
+    price?: number;
+    reason: string;
+    candleTs: number;
+  }): string {
+    const basis = [
+      params.symbol,
+      params.side,
+      params.type,
+      params.quantity.toFixed(6),
+      params.price?.toFixed(6) ?? "market",
+      params.reason,
+      params.candleTs
+    ].join("|");
+    const digest = createHash("sha256").update(basis).digest("hex").slice(0, 20);
+    const symbolCode = params.symbol === "BTC/USDT" ? "btc" : "eth";
+    const sideCode = params.side === "buy" ? "b" : "s";
+    return `cx-${symbolCode}-${sideCode}-${digest}`;
+  }
+
+  private resolveOrderFeeUsdt(
+    result: Order,
+    fillPrice: number,
+    quotes: Record<SupportedSymbol, QuoteSnapshot>,
+    fallbackPrice: number
+  ): number {
+    const fees = result.fees ?? [];
+    if (fees.length > 0) {
+      let converted = 0;
+      for (const fee of fees) {
+        const value = this.toUsdtFeeAmount(result.symbol, fee.asset, fee.amount, fillPrice, quotes, fallbackPrice);
+        if (value === undefined) {
+          converted = 0;
+          break;
+        }
+        converted += value;
+      }
+      if (converted > 0) return converted;
+    }
+
+    const tradedNotional = fillPrice * Math.max(result.filledQuantity, result.quantity);
+    return tradedNotional * (this.cfg.feeBps / 10_000);
+  }
+
+  private toUsdtFeeAmount(
+    symbol: string,
+    asset: string,
+    amount: number,
+    fillPrice: number,
+    quotes: Record<SupportedSymbol, QuoteSnapshot>,
+    fallbackPrice: number
+  ): number | undefined {
+    if (!Number.isFinite(amount) || amount <= 0) return 0;
+    const normalizedAsset = asset.toUpperCase();
+    if (normalizedAsset === "USDT") return amount;
+
+    const parts = symbol.split("/");
+    const base = (parts[0] ?? "").toUpperCase();
+    const quote = (parts[1] ?? "").toUpperCase();
+
+    if (normalizedAsset === quote && quote === "USDT") return amount;
+    if (normalizedAsset === base) {
+      const supportedSymbol = symbol === "BTC/USDT" || symbol === "ETH/USDT" ? (symbol as SupportedSymbol) : undefined;
+      const mark = supportedSymbol ? this.bidOrLast(quotes[supportedSymbol]) : Math.max(fillPrice, fallbackPrice);
+      if (!Number.isFinite(mark) || mark <= 0) return undefined;
+      return amount * mark;
+    }
+
+    return undefined;
+  }
+
+  private async hydrateStateIfNeeded(nowTs: number): Promise<void> {
+    if (this.stateHydrated) return;
+    this.stateHydrated = true;
+    if (!this.persistence) return;
+
+    try {
+      const persisted = await this.persistence.getState<RuntimeState>(this.runtimeStateKey);
+      if (!persisted) return;
+
+      this.state = {
+        ...this.state,
+        ...persisted,
+        lastCycleMs: nowTs,
+        currentDayKey: this.dayKey(nowTs)
+      };
+      logger.info({
+        event: "runtime_state_restored",
+        runId: this.runId,
+        stateKey: this.runtimeStateKey,
+        tradesToday: this.state.tradesToday,
+        totalTrades: this.state.totalTrades,
+        peakEquityUsdt: this.state.peakEquityUsdt
+      });
+    } catch (error) {
+      logger.warn({
+        event: "runtime_state_restore_failed",
+        runId: this.runId,
+        stateKey: this.runtimeStateKey,
+        reason: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  private async persistRuntimeState(): Promise<void> {
+    if (!this.persistence) return;
+    try {
+      await this.persistence.putState(this.runtimeStateKey, this.state);
+    } catch (error) {
+      logger.warn({
+        event: "runtime_state_persist_failed",
+        runId: this.runId,
+        stateKey: this.runtimeStateKey,
+        reason: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  private async recordEvent(type: string, payload: unknown): Promise<void> {
+    if (!this.persistence) return;
+    try {
+      await this.persistence.insertEvent(type, payload);
+    } catch (error) {
+      logger.warn({
+        event: "event_persist_failed",
+        runId: this.runId,
+        type,
+        reason: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private warnIfHistoryStale(symbol: SupportedSymbol, timeframe: string, lastTs: number, nowTs: number): void {

@@ -1,5 +1,5 @@
-﻿import type { ExchangeAdapter } from "../../core/interfaces.js";
-import type { AccountSnapshot, Candle, Order, PlaceOrderRequest, Position, Quote } from "../../core/domain/types.js";
+import type { ExchangeAdapter } from "../../core/interfaces.js";
+import type { AccountSnapshot, Candle, Order, OrderFee, PlaceOrderRequest, Position, Quote } from "../../core/domain/types.js";
 import { withRetry } from "../../infra/retry.js";
 import { config } from "../../infra/config.js";
 import { logger } from "../../infra/logger.js";
@@ -26,6 +26,14 @@ interface OrderPayload {
   price?: number | string;
   amount?: number | string;
   filled?: number | string;
+  fee?: {
+    currency?: string;
+    cost?: number | string;
+  };
+  fees?: Array<{
+    currency?: string;
+    cost?: number | string;
+  }>;
 }
 
 interface TickerPayload {
@@ -64,6 +72,17 @@ function asTickerPayload(value: unknown): TickerPayload {
 
 function asOhlcvRows(value: unknown): OhlcvRow[] {
   return Array.isArray(value) ? (value as OhlcvRow[]) : [];
+}
+
+function toOrderFees(payload: OrderPayload): OrderFee[] | undefined {
+  const raw = Array.isArray(payload.fees) ? payload.fees : payload.fee ? [payload.fee] : [];
+  const normalized = raw
+    .map((fee) => ({
+      asset: String(fee?.currency ?? "").toUpperCase(),
+      amount: Number(fee?.cost ?? 0)
+    }))
+    .filter((fee) => fee.asset.length > 0 && Number.isFinite(fee.amount) && fee.amount > 0);
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function toNumber(value: unknown, fallback = 0): number {
@@ -454,6 +473,7 @@ export class BinanceAdapter implements ExchangeAdapter {
       price: normalized.request.price,
       quantity: normalized.request.quantity,
       filledQuantity: Number(response.filled ?? 0),
+      fees: toOrderFees(response),
       ts: Date.now()
     };
   }
@@ -485,6 +505,7 @@ export class BinanceAdapter implements ExchangeAdapter {
       price: Number(order.price ?? 0),
       quantity: Number(order.amount ?? 0),
       filledQuantity: Number(order.filled ?? 0),
+      fees: toOrderFees(order),
       ts: Date.now()
     };
   }

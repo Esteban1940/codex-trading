@@ -4,6 +4,11 @@ export type OrderSide = "buy" | "sell";
 export type OrderType = "market" | "limit";
 export type OrderStatus = "new" | "partially_filled" | "filled" | "cancelled" | "rejected";
 
+export interface OrderFee {
+  asset: string;
+  amount: number;
+}
+
 export interface Quote {
   symbol: string;
   bid: number;
@@ -59,6 +64,7 @@ export interface Order {
   price?: number;
   quantity: number;
   filledQuantity: number;
+  fees?: OrderFee[];
   ts: number;
 }
 

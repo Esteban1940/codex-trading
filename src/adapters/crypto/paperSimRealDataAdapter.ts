@@ -209,6 +209,7 @@ export class PaperSimRealDataAdapter implements ExchangeAdapter {
       order.status = "rejected";
       order.filledQuantity = 0;
       order.price = fillPrice;
+      order.fees = undefined;
       return;
     }
 
@@ -219,6 +220,7 @@ export class PaperSimRealDataAdapter implements ExchangeAdapter {
         order.status = "rejected";
         order.filledQuantity = 0;
         order.price = fillPrice;
+        order.fees = undefined;
         return;
       }
 
@@ -230,6 +232,7 @@ export class PaperSimRealDataAdapter implements ExchangeAdapter {
       order.price = fillPrice;
       order.filledQuantity = fillQty;
       order.status = fillQty + 1e-12 < requestedQty ? "partially_filled" : "filled";
+      order.fees = fee > 0 ? [{ asset: "USDT", amount: fee }] : undefined;
       return;
     }
 
@@ -239,6 +242,7 @@ export class PaperSimRealDataAdapter implements ExchangeAdapter {
       order.status = "rejected";
       order.filledQuantity = 0;
       order.price = fillPrice;
+      order.fees = undefined;
       return;
     }
 
@@ -250,6 +254,7 @@ export class PaperSimRealDataAdapter implements ExchangeAdapter {
     order.price = fillPrice;
     order.filledQuantity = fillQty;
     order.status = fillQty + 1e-12 < requestedQty ? "partially_filled" : "filled";
+    order.fees = fee > 0 ? [{ asset: "USDT", amount: fee }] : undefined;
   }
 
   private maxAffordableQuantity(price: number): number {

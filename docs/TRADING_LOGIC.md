@@ -19,6 +19,7 @@ Each cycle the bot:
 6. Otherwise allocates capital between BTC and ETH via score-based allocator.
 7. Rebalances inventory with spot-only buy/sell orders.
 8. If `READ_ONLY_MODE=true`, it logs planned orders but skips execution.
+9. Persists runtime state and execution idempotency keys to local durable storage for restart recovery.
 
 If no new fast candle arrives and `SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY=true`, the cycle logs:
 - `cycle_skipped_no_new_candle`
@@ -141,14 +142,17 @@ When violated:
 - Trading is blocked.
 - If enabled, liquidation to USDT is forced for severe breaches (kill switch, daily loss, drawdown, ATR breaker).
 - `max trades per day` blocks new entries but does not auto-liquidate by itself.
+- Per-order pre-check uses stressed slippage assumptions for buy notional limits.
 
 ## Execution behavior
 
-- Idempotent `clientOrderId` handling.
+- Deterministic, idempotent `clientOrderId` handling by trade intent (survives process restarts).
 - Entry supports limit with timeout + fallback to market.
 - Exit/risk orders default to market (`EXEC_EXIT_ORDER_TYPE=market`).
 - Partial fill handling is supported via reconciliation/fallback path.
 - Pre-flight risk validation runs before each order (daily loss, drawdown, notional caps).
+- Quote staleness is validated immediately before order submission; stale quotes are refreshed or order is blocked.
+- Fees are reconciled from adapter/exchange-reported commission when available (fallback: configured `feeBps` estimate).
 - Binance order requests are normalized against venue filters (`LOT_SIZE`, `PRICE_FILTER`, `MIN_NOTIONAL`) before sending.
 
 ## Metrics and reports (paper/backtest)

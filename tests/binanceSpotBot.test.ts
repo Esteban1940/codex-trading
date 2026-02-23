@@ -14,6 +14,8 @@ import type { SignalEngine, SymbolSignal } from "../src/core/signal/signalEngine
 class TestExchangeAdapter implements ExchangeAdapter {
   public balances: Record<string, number>;
   public fastCandleTs = Date.now();
+  public quoteTsOffsetMs = 0;
+  public feeOnFillUsdt = 0;
   public readonly placedOrders: PlaceOrderRequest[] = [];
   private readonly orders = new Map<string, Order>();
 
@@ -75,6 +77,7 @@ class TestExchangeAdapter implements ExchangeAdapter {
       price: fillPrice,
       quantity: request.quantity,
       filledQuantity: request.quantity,
+      fees: this.feeOnFillUsdt > 0 ? [{ asset: "USDT", amount: this.feeOnFillUsdt }] : undefined,
       ts: Date.now()
     };
     this.orders.set(order.id, order);
@@ -96,7 +99,7 @@ class TestExchangeAdapter implements ExchangeAdapter {
 
   async getQuote(symbol: string): Promise<Quote> {
     const last = symbol === "BTC/USDT" ? 68_000 : 2_000;
-    return { symbol, bid: last * 0.9995, ask: last * 1.0005, last, ts: Date.now() };
+    return { symbol, bid: last * 0.9995, ask: last * 1.0005, last, ts: Date.now() - this.quoteTsOffsetMs };
   }
 
   async getHistory(symbol: string, from: Date, to: Date, timeframe: string): Promise<Candle[]> {
@@ -158,6 +161,7 @@ function createBot(params: {
   signalEngine: StubSignalEngine;
   evalOnFastCandleCloseOnly?: boolean;
   maxTradesPerDay?: number;
+  quoteMaxAgeMs?: number;
 }): BinanceSpotBot {
   return new BinanceSpotBot(
     params.adapter,
@@ -213,7 +217,9 @@ function createBot(params: {
       entryLimitTimeoutMs: 100,
       exitOrderType: "market",
       liveTrading: false,
-      readOnlyMode: false
+      readOnlyMode: false,
+      quoteMaxAgeMs: params.quoteMaxAgeMs ?? 5_000,
+      riskOrderSlippageStressBps: 15
     }
   );
 }
@@ -298,5 +304,65 @@ describe("Risk sell-path regression", () => {
     const sells = adapter.placedOrders.filter((o) => o.symbol === "BTC/USDT" && o.side === "sell");
     expect(sells.length).toBeGreaterThan(0);
     expect(adapter.balances.BTC).toBeLessThan(0.02);
+  });
+});
+
+describe("Order safety and fee reconciliation", () => {
+  it("generates deterministic clientOrderId for the same trade intent", async () => {
+    const build = () => {
+      const adapter = new TestExchangeAdapter({ USDT: 1_000, BTC: 0, ETH: 0 });
+      adapter.fastCandleTs = 1_700_000_000_000;
+      const signalEngine = new StubSignalEngine({
+        "BTC/USDT": makeSignal("enter", 0.8, "bullish"),
+        "ETH/USDT": makeSignal("hold", 0, "neutral")
+      });
+      const bot = createBot({ adapter, signalEngine, evalOnFastCandleCloseOnly: false });
+      return { adapter, bot };
+    };
+
+    const first = build();
+    const second = build();
+
+    await first.bot.runCycle();
+    await second.bot.runCycle();
+
+    const firstOrder = first.adapter.placedOrders[0];
+    const secondOrder = second.adapter.placedOrders[0];
+    expect(firstOrder?.clientOrderId).toBeDefined();
+    expect(firstOrder?.clientOrderId).toBe(secondOrder?.clientOrderId);
+  });
+
+  it("blocks order placement when quote remains stale", async () => {
+    const adapter = new TestExchangeAdapter({ USDT: 1_000, BTC: 0, ETH: 0 });
+    adapter.quoteTsOffsetMs = 60_000;
+    const signalEngine = new StubSignalEngine({
+      "BTC/USDT": makeSignal("enter", 0.8, "bullish"),
+      "ETH/USDT": makeSignal("hold", 0, "neutral")
+    });
+    const bot = createBot({
+      adapter,
+      signalEngine,
+      evalOnFastCandleCloseOnly: false,
+      quoteMaxAgeMs: 1_000
+    });
+
+    await bot.runCycle();
+
+    expect(adapter.placedOrders.length).toBe(0);
+  });
+
+  it("uses exchange-reported fees when available", async () => {
+    const adapter = new TestExchangeAdapter({ USDT: 1_000, BTC: 0, ETH: 0 });
+    adapter.feeOnFillUsdt = 2.5;
+    const signalEngine = new StubSignalEngine({
+      "BTC/USDT": makeSignal("enter", 0.8, "bullish"),
+      "ETH/USDT": makeSignal("hold", 0, "neutral")
+    });
+    const bot = createBot({ adapter, signalEngine, evalOnFastCandleCloseOnly: false });
+
+    await bot.runCycle();
+    const report = bot.getReport();
+
+    expect(report.feesPaidUsdt).toBeCloseTo(2.5, 6);
   });
 });

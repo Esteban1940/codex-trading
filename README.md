@@ -72,6 +72,11 @@ Backtest (BTC + ETH CSV 15m):
 pnpm backtest --btc-csv ./data/btc_15m.csv --eth-csv ./data/eth_15m.csv --initial-usdt 10000
 ```
 
+Backtest with metrics export (JSON):
+```bash
+pnpm backtest --btc-csv ./data/btc_15m.csv --eth-csv ./data/eth_15m.csv --initial-usdt 10000 --report-json ./artifacts/backtest-report.json
+```
+
 Live (blocked by default):
 ```bash
 # in .env
@@ -102,6 +107,8 @@ pnpm run typecheck
 pnpm run lint
 pnpm run test
 ```
+
+CI is configured in `.github/workflows/ci.yml` and runs the same checks on every pull request and push to `main`.
 
 ## Logic docs
 

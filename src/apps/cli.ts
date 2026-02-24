@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
 import { config } from "../infra/config.js";
@@ -332,6 +333,7 @@ program
   .requiredOption("--btc-csv <path>", "BTC/USDT 15m CSV")
   .requiredOption("--eth-csv <path>", "ETH/USDT 15m CSV")
   .option("--initial-usdt <number>", "Initial USDT", "10000")
+  .option("--report-json <path>", "Write backtest metrics as JSON file")
   .action(async (opts) => {
     const btc = loadCandlesFromCsv(opts.btcCsv);
     const eth = loadCandlesFromCsv(opts.ethCsv);
@@ -343,6 +345,13 @@ program
       slippageBps: config.DEFAULT_SLIPPAGE_BPS,
       barsPerDay: 96
     });
+
+    const reportJsonPath = String(opts.reportJson ?? "").trim();
+    if (reportJsonPath.length > 0) {
+      const absolutePath = path.resolve(reportJsonPath);
+      await fs.writeFile(absolutePath, JSON.stringify(report, null, 2), "utf-8");
+      logger.info({ event: "backtest_report_json_written", path: absolutePath });
+    }
 
     logger.info({ event: "backtest_done", report });
   });

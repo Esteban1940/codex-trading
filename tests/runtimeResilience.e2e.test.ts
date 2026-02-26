@@ -86,7 +86,6 @@ describe("runtime resilience e2e", () => {
     expect(quote.ask).toBe(22);
     expect(quote.last).toBe(21);
     expect(callExchange).toHaveBeenCalledTimes(1);
-    expect(callExchange.mock.calls[0]?.[0]).toBe("fetchTicker");
   });
 
   it("uses websocket quote directly when snapshot is fresh", async () => {

@@ -6,6 +6,49 @@ cd "$ROOT_DIR"
 
 mode="${1:-preflight}"
 
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf "%s" "$value"
+}
+
+strip_wrapping_quotes() {
+  local value="$1"
+  if [[ "${value:0:1}" == "\"" && "${value: -1}" == "\"" ]]; then
+    printf "%s" "${value:1:${#value}-2}"
+    return
+  fi
+  if [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+    printf "%s" "${value:1:${#value}-2}"
+    return
+  fi
+  printf "%s" "$value"
+}
+
+read_env_value() {
+  local key="$1"
+  if [[ -n "${!key:-}" ]]; then
+    printf "%s" "${!key}"
+    return
+  fi
+
+  if [[ ! -f .env ]]; then
+    return
+  fi
+
+  local line
+  line="$(grep -E "^[[:space:]]*${key}=" .env | tail -n1 || true)"
+  if [[ -z "$line" ]]; then
+    return
+  fi
+
+  local value="${line#*=}"
+  value="$(trim "$value")"
+  value="$(strip_wrapping_quotes "$value")"
+  printf "%s" "$value"
+}
+
 required_bin() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "[error] missing required command: $1" >&2
@@ -15,15 +58,21 @@ required_bin() {
 
 has_env_var() {
   local key="$1"
-  if [[ -n "${!key:-}" ]]; then
-    return 0
+  [[ -n "$(read_env_value "$key")" ]]
+}
+
+validate_secret_file_var() {
+  local key="$1"
+  local file_path
+  file_path="$(read_env_value "$key")"
+  if [[ -z "$file_path" ]]; then
+    return
   fi
 
-  if [[ -f .env ]] && grep -Eq "^[[:space:]]*${key}=.+" .env; then
-    return 0
+  if [[ ! -r "$file_path" ]]; then
+    echo "[error] secret file from ${key} is not readable: ${file_path}" >&2
+    exit 1
   fi
-
-  return 1
 }
 
 check_required_env() {
@@ -93,11 +142,12 @@ run_preflight() {
   required_bin git
 
   if [[ ! -f .env ]]; then
-    echo "[error] .env not found. copy .env.example to .env and fill values." >&2
-    exit 1
+    echo "[warn] .env not found. relying on current process environment."
   fi
 
   check_required_env
+  validate_secret_file_var "BINANCE_API_KEY_FILE"
+  validate_secret_file_var "BINANCE_API_SECRET_FILE"
 
   run_cmd pnpm install --frozen-lockfile
   run_cmd pnpm run typecheck

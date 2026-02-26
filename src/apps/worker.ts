@@ -91,6 +91,8 @@ const noTradeMonitor = new NoTradeMonitor({
   threshold: Math.max(1, config.MONITOR_NOTRADE_ALERT_THRESHOLD),
   alertCooldownCycles: Math.max(1, config.MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES)
 });
+let shutdownRequested = false;
+let shutdownSignal = "";
 
 /**
  * Computes worker sleep interval:
@@ -238,6 +240,17 @@ const bot = new BinanceSpotBot(
   );
 
 async function main(): Promise<void> {
+  const requestShutdown = (signal: NodeJS.Signals): void => {
+    if (shutdownRequested) return;
+    shutdownRequested = true;
+    shutdownSignal = signal;
+    logger.warn({ event: "worker_shutdown_requested", signal });
+    void sendAlert("worker_shutdown_requested", { signal });
+  };
+
+  process.once("SIGINT", requestShutdown);
+  process.once("SIGTERM", requestShutdown);
+
   logger.info({
     event: "worker_started",
     symbols: config.SYMBOLS,
@@ -295,7 +308,7 @@ async function main(): Promise<void> {
 
   let cycle = 0;
   let lastDailyReportKey = "";
-  while (config.WORKER_MAX_CYCLES === 0 || cycle < config.WORKER_MAX_CYCLES) {
+  while (!shutdownRequested && (config.WORKER_MAX_CYCLES === 0 || cycle < config.WORKER_MAX_CYCLES)) {
     cycle += 1;
 
     // Run one full decision/execution cycle and snapshot report metrics.
@@ -340,11 +353,13 @@ async function main(): Promise<void> {
       sleepMs,
       alignToFastCandleClose: config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE && config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY
     });
-    await sleep(sleepMs);
+    if (!shutdownRequested) {
+      await sleep(sleepMs);
+    }
   }
 
-  logger.info({ event: "worker_stopped", cycles: cycle, report: bot.getReport() });
-  await sendAlert("worker_stopped", { cycles: cycle, report: bot.getReport() });
+  logger.info({ event: "worker_stopped", cycles: cycle, shutdownSignal, report: bot.getReport() });
+  await sendAlert("worker_stopped", { cycles: cycle, shutdownSignal, report: bot.getReport() });
 }
 
 main().catch((error: unknown) => {

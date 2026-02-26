@@ -120,6 +120,8 @@ pnpm run preflight
 pnpm run test:coverage
 ```
 
+`preflight` accepts either `.env` or process env variables. If `BINANCE_*_FILE` is set, it validates that secret files are readable.
+
 Optional live-adapter integration smoke (requires Binance credentials in env):
 
 ```bash
@@ -160,6 +162,7 @@ See `docs/SECRETS.md` and `docker-compose.prod.yml` for an end-to-end setup.
 ```bash
 ./scripts/worker-watchdog.sh
 ```
+- Watchdog alert throttling is configurable (`WATCHDOG_ALERT_COOLDOWN_SEC`, `WATCHDOG_STATE_FILE`).
 - Optional systemd deployment and rollback runbook: `docs/DEPLOY_SYSTEMD.md`.
 
 ## Logic docs

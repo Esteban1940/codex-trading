@@ -11,8 +11,9 @@ pnpm run preflight
 ```
 
 What it validates:
-- `.env` exists.
+- `.env` exists or required vars are present in process env.
 - Required environment variables are defined.
+- If `BINANCE_API_KEY_FILE` / `BINANCE_API_SECRET_FILE` are configured, files are readable.
 - Install is reproducible (`--frozen-lockfile`).
 - `typecheck`, `lint` (zero warnings), and `test` pass.
 - Optional integration smoke if `RUN_BINANCE_INTEGRATION=true`.

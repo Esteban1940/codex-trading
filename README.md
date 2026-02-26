@@ -28,11 +28,16 @@ Required env values:
 - `SYMBOLS=BTC/USDT,ETH/USDT`
 - `TIMEFRAMES=15m,1h`
 - `BINANCE_API_KEY`, `BINANCE_API_SECRET`
+- Optional production secret files: `BINANCE_API_KEY_FILE`, `BINANCE_API_SECRET_FILE` (preferred in Docker/runtime secret mounts)
 - `BINANCE_TESTNET=false` by default for mainnet read-only smoke tests (`READ_ONLY_MODE=true`)
 - `PAPER_INITIAL_USDT` to mirror your paper account size (example `94`)
 - `MIN_NOTIONAL_USDT` to enforce min order notional (default `10`)
 - Ensure `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equity >= MIN_NOTIONAL_USDT` (for ~94 USDT, use at least `0.11` per symbol)
+- For strict live preflight on micro-capital, set `LIVE_EQUITY_REFERENCE_USDT` to current equity
 - Live conservative limits are validated at startup (`LIVE_REQUIRE_CONSERVATIVE_LIMITS=true`)
+- Quote freshness and retries are configurable (`EXEC_QUOTE_MAX_AGE_MS`, `EXEC_QUOTE_STALE_RETRY_COUNT`, `EXEC_QUOTE_STALE_RETRY_BACKOFF_MS`)
+- Worker can align loops to fast candle close (`WORKER_ALIGN_TO_FAST_CANDLE_CLOSE=true`, `WORKER_CANDLE_CLOSE_GRACE_MS=1500`)
+- Optional webhook alerts: `ALERT_WEBHOOK_URL`
 
 ## Commands
 
@@ -109,6 +114,14 @@ pnpm run test
 ```
 
 CI is configured in `.github/workflows/ci.yml` and runs the same checks on every pull request and push to `main`.
+
+## Docker secrets
+
+For production deployments, prefer mounting secrets as files and using:
+- `BINANCE_API_KEY_FILE`
+- `BINANCE_API_SECRET_FILE`
+
+This avoids storing credentials in plain `.env` files inside container images/layers.
 
 ## Logic docs
 

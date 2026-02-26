@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { config, type AppConfig } from "../src/infra/config.js";
-import { assertConservativeLiveConfig } from "../src/infra/liveSafety.js";
+import { assertConservativeLiveConfig, assertLiveMinNotionalFeasibility } from "../src/infra/liveSafety.js";
 
 function buildLiveConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -53,3 +53,28 @@ describe("assertConservativeLiveConfig", () => {
   });
 });
 
+describe("assertLiveMinNotionalFeasibility", () => {
+  it("passes when exposure allows min notional with reference equity", () => {
+    expect(() =>
+      assertLiveMinNotionalFeasibility(
+        buildLiveConfig({
+          LIVE_EQUITY_REFERENCE_USDT: 94,
+          MIN_NOTIONAL_USDT: 10,
+          ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL: 0.15
+        })
+      )
+    ).not.toThrow();
+  });
+
+  it("fails when exposure cannot reach min notional", () => {
+    expect(() =>
+      assertLiveMinNotionalFeasibility(
+        buildLiveConfig({
+          LIVE_EQUITY_REFERENCE_USDT: 94,
+          MIN_NOTIONAL_USDT: 10,
+          ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL: 0.1
+        })
+      )
+    ).toThrow(/min-notional feasibility/i);
+  });
+});

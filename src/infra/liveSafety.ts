@@ -89,3 +89,29 @@ export function assertConservativeLiveConfig(cfg: AppConfig): void {
     );
   }
 }
+
+export function assertLiveMinNotionalFeasibility(cfg: AppConfig, equityUsdt?: number): void {
+  if (!cfg.LIVE_TRADING) return;
+
+  const referenceEquity =
+    typeof equityUsdt === "number" && Number.isFinite(equityUsdt) && equityUsdt > 0
+      ? equityUsdt
+      : cfg.LIVE_EQUITY_REFERENCE_USDT > 0
+        ? cfg.LIVE_EQUITY_REFERENCE_USDT
+        : 0;
+  if (referenceEquity <= 0) return;
+
+  const maxPerSymbolNotional = referenceEquity * cfg.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL;
+  if (maxPerSymbolNotional + 1e-9 >= cfg.MIN_NOTIONAL_USDT) return;
+
+  const requiredExposure = cfg.MIN_NOTIONAL_USDT / referenceEquity;
+  throw new Error(
+    [
+      "Live min-notional feasibility validation failed.",
+      `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL=${cfg.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL} with reference equity ${referenceEquity} USDT`,
+      `cannot reach MIN_NOTIONAL_USDT=${cfg.MIN_NOTIONAL_USDT}.`,
+      `Set ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL >= ${requiredExposure.toFixed(4)} or increase equity.`,
+      "You can set LIVE_EQUITY_REFERENCE_USDT to match current account equity for strict preflight validation."
+    ].join("\n")
+  );
+}

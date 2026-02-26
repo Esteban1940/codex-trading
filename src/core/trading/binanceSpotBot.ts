@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Persistence } from "../../infra/db/persistence.js";
 import { logger } from "../../infra/logger.js";
+import { sleep } from "../../infra/retry.js";
+import { sendAlert } from "../../infra/alerts.js";
 import type { ExchangeAdapter } from "../interfaces.js";
 import type { Order, PlaceOrderRequest, Position, Quote, RiskSnapshot } from "../domain/types.js";
 import { SignalEngine } from "../signal/signalEngine.js";
@@ -40,6 +42,8 @@ interface BotConfig {
   liveTrading: boolean;
   readOnlyMode: boolean;
   quoteMaxAgeMs?: number;
+  quoteStaleRetryCount?: number;
+  quoteStaleRetryBackoffMs?: number;
   riskOrderSlippageStressBps?: number;
   executionStorePath?: string;
   runId?: string;
@@ -457,6 +461,7 @@ export class BinanceSpotBot {
       const riskLiquidationPayload = { event: "risk_liquidation", ...logContext, reasons: risk.reasons };
       logger.warn(riskLiquidationPayload);
       await this.recordEvent("risk_liquidation", riskLiquidationPayload);
+      await sendAlert("risk_liquidation", riskLiquidationPayload);
       orders = this.inventory.planLiquidation(holdingsBefore, lastPricesBefore);
     } else {
       if (!allowEntries) {
@@ -696,6 +701,17 @@ export class BinanceSpotBot {
       const orderExecutedPayload = { event: "order_executed", ...logContext, planned, result, fee };
       logger.info(orderExecutedPayload);
       await this.recordEvent("order_executed", orderExecutedPayload);
+      await sendAlert("order_executed", {
+        runId: this.runId,
+        cycleId,
+        symbol: planned.symbol,
+        side: planned.side,
+        type: planned.type,
+        requestedQty: planned.quantity,
+        filledQty: result.filledQuantity,
+        fillPrice,
+        feeUsdt: fee
+      });
     }
 
     const quotesAfter = await this.fetchQuotes();
@@ -1183,6 +1199,14 @@ export class BinanceSpotBot {
     return Math.max(250, this.cfg.quoteMaxAgeMs ?? 5_000);
   }
 
+  private effectiveQuoteRetryCount(): number {
+    return Math.max(0, Math.floor(this.cfg.quoteStaleRetryCount ?? 1));
+  }
+
+  private effectiveQuoteRetryBackoffMs(): number {
+    return Math.max(0, this.cfg.quoteStaleRetryBackoffMs ?? 250);
+  }
+
   private async ensureFreshQuoteForOrder(
     symbol: SupportedSymbol,
     quotes: Record<SupportedSymbol, QuoteSnapshot>,
@@ -1204,16 +1228,42 @@ export class BinanceSpotBot {
       maxQuoteAgeMs: this.effectiveQuoteMaxAgeMs()
     });
 
-    const refreshed = await this.adapter.getQuote(symbol);
-    const snapshot = this.toQuoteSnapshot(refreshed);
-    quotes[symbol] = snapshot;
-    lastPrices[symbol] = snapshot.last;
+    let snapshot = current;
+    for (let attempt = 0; attempt <= this.effectiveQuoteRetryCount(); attempt += 1) {
+      const refreshed = await this.adapter.getQuote(symbol);
+      snapshot = this.toQuoteSnapshot(refreshed);
+      quotes[symbol] = snapshot;
+      lastPrices[symbol] = snapshot.last;
+      const refreshedAgeMs = Date.now() - snapshot.ts;
 
-    const refreshedAgeMs = Date.now() - snapshot.ts;
-    if (refreshedAgeMs > this.effectiveQuoteMaxAgeMs()) {
-      return undefined;
+      if (refreshedAgeMs <= this.effectiveQuoteMaxAgeMs()) {
+        if (attempt > 0) {
+          logger.info({
+            event: "quote_stale_recovered",
+            runId: this.runId,
+            symbol,
+            attempt,
+            ageMs: refreshedAgeMs
+          });
+        }
+        return snapshot;
+      }
+
+      if (attempt < this.effectiveQuoteRetryCount()) {
+        await sleep(this.effectiveQuoteRetryBackoffMs());
+      }
     }
-    return snapshot;
+
+    logger.warn({
+      event: "quote_stale_after_retries",
+      runId: this.runId,
+      symbol,
+      quoteTs: snapshot.ts,
+      ageMs: Date.now() - snapshot.ts,
+      maxQuoteAgeMs: this.effectiveQuoteMaxAgeMs(),
+      retryCount: this.effectiveQuoteRetryCount()
+    });
+    return undefined;
   }
 
   private toQuoteSnapshot(quote: Quote): QuoteSnapshot {

@@ -1,5 +1,29 @@
 import "dotenv/config";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
+
+function readSecretFromFile(pathValue: string): string {
+  return readFileSync(pathValue, "utf8").trim();
+}
+
+function applyFileBackedSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env };
+  const fileBackedKeys: Array<{ valueKey: keyof NodeJS.ProcessEnv; fileKey: keyof NodeJS.ProcessEnv }> = [
+    { valueKey: "BINANCE_API_KEY", fileKey: "BINANCE_API_KEY_FILE" },
+    { valueKey: "BINANCE_API_SECRET", fileKey: "BINANCE_API_SECRET_FILE" },
+    { valueKey: "IOL_USERNAME", fileKey: "IOL_USERNAME_FILE" },
+    { valueKey: "IOL_PASSWORD", fileKey: "IOL_PASSWORD_FILE" },
+    { valueKey: "IOL_ACCOUNT_ID", fileKey: "IOL_ACCOUNT_ID_FILE" }
+  ];
+
+  for (const pair of fileBackedKeys) {
+    const pathValue = out[pair.fileKey];
+    if (!pathValue || String(pathValue).trim().length === 0) continue;
+    out[pair.valueKey] = readSecretFromFile(String(pathValue));
+  }
+
+  return out;
+}
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -86,23 +110,36 @@ const envSchema = z.object({
   IOL_BASE_URL: z.string().default("https://api.invertironline.com"),
   IOL_SANDBOX_BASE_URL: z.string().default("https://api.invertironline.com"),
   IOL_USERNAME: z.string().default(""),
+  IOL_USERNAME_FILE: z.string().default(""),
   IOL_PASSWORD: z.string().default(""),
+  IOL_PASSWORD_FILE: z.string().default(""),
   IOL_ACCOUNT_ID: z.string().default(""),
+  IOL_ACCOUNT_ID_FILE: z.string().default(""),
   IOL_USE_SANDBOX: z.string().default("true").transform((v) => v === "true"),
 
   BINANCE_API_KEY: z.string().default(""),
+  BINANCE_API_KEY_FILE: z.string().default(""),
   BINANCE_API_SECRET: z.string().default(""),
-  BINANCE_TESTNET: z.string().default("true").transform((v) => v === "true"),
+  BINANCE_API_SECRET_FILE: z.string().default(""),
+  BINANCE_TESTNET: z.string().default("false").transform((v) => v === "true"),
   BINANCE_TESTNET_BASE_URL: z.string().default(""),
   BINANCE_ENABLE_WITHDRAWALS: z.string().default("false").transform((v) => v === "true"),
+  ALERT_WEBHOOK_URL: z.string().default(""),
+  ALERT_WEBHOOK_TIMEOUT_MS: z.coerce.number().default(3000),
 
   SYMBOLS: z.string().default("BTC/USDT,ETH/USDT"),
   TIMEFRAMES: z.string().default("15m,1h"),
 
   WORKER_INTERVAL_MS: z.coerce.number().default(60000),
   WORKER_MAX_CYCLES: z.coerce.number().default(0),
-  WORKER_REAL_ADAPTER: z.string().default("false").transform((v) => v === "true")
+  WORKER_REAL_ADAPTER: z.string().default("false").transform((v) => v === "true"),
+  WORKER_ALIGN_TO_FAST_CANDLE_CLOSE: z.string().default("true").transform((v) => v === "true"),
+  WORKER_CANDLE_CLOSE_GRACE_MS: z.coerce.number().default(1500),
+  EXEC_QUOTE_MAX_AGE_MS: z.coerce.number().default(5000),
+  EXEC_QUOTE_STALE_RETRY_COUNT: z.coerce.number().default(2),
+  EXEC_QUOTE_STALE_RETRY_BACKOFF_MS: z.coerce.number().default(250),
+  LIVE_EQUITY_REFERENCE_USDT: z.coerce.number().default(0)
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
-export const config: AppConfig = envSchema.parse(process.env);
+export const config: AppConfig = envSchema.parse(applyFileBackedSecrets(process.env));

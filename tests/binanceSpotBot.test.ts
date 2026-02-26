@@ -15,6 +15,7 @@ class TestExchangeAdapter implements ExchangeAdapter {
   public balances: Record<string, number>;
   public fastCandleTs = Date.now();
   public quoteTsOffsetMs = 0;
+  public quoteTsOffsetSequenceMs: number[] = [];
   public feeOnFillUsdt = 0;
   public readonly placedOrders: PlaceOrderRequest[] = [];
   private readonly orders = new Map<string, Order>();
@@ -99,7 +100,9 @@ class TestExchangeAdapter implements ExchangeAdapter {
 
   async getQuote(symbol: string): Promise<Quote> {
     const last = symbol === "BTC/USDT" ? 68_000 : 2_000;
-    return { symbol, bid: last * 0.9995, ask: last * 1.0005, last, ts: Date.now() - this.quoteTsOffsetMs };
+    const offset =
+      this.quoteTsOffsetSequenceMs.length > 0 ? (this.quoteTsOffsetSequenceMs.shift() ?? this.quoteTsOffsetMs) : this.quoteTsOffsetMs;
+    return { symbol, bid: last * 0.9995, ask: last * 1.0005, last, ts: Date.now() - offset };
   }
 
   async getHistory(symbol: string, from: Date, to: Date, timeframe: string): Promise<Candle[]> {
@@ -364,5 +367,23 @@ describe("Order safety and fee reconciliation", () => {
     const report = bot.getReport();
 
     expect(report.feesPaidUsdt).toBeCloseTo(2.5, 6);
+  });
+
+  it("recovers order placement when refreshed quote becomes fresh", async () => {
+    const adapter = new TestExchangeAdapter({ USDT: 1_000, BTC: 0, ETH: 0 });
+    adapter.quoteTsOffsetSequenceMs = [60_000, 0];
+    const signalEngine = new StubSignalEngine({
+      "BTC/USDT": makeSignal("enter", 0.8, "bullish"),
+      "ETH/USDT": makeSignal("hold", 0, "neutral")
+    });
+    const bot = createBot({
+      adapter,
+      signalEngine,
+      evalOnFastCandleCloseOnly: false,
+      quoteMaxAgeMs: 1_000
+    });
+
+    await bot.runCycle();
+    expect(adapter.placedOrders.length).toBeGreaterThan(0);
   });
 });

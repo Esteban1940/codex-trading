@@ -3,7 +3,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
-import { assertConservativeLiveConfig } from "../infra/liveSafety.js";
+import { assertConservativeLiveConfig, assertLiveMinNotionalFeasibility } from "../infra/liveSafety.js";
 import { SqlitePersistence } from "../infra/db/persistence.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
@@ -67,6 +67,25 @@ function parseTimeframes(raw: string): [string, string] {
     .filter(Boolean);
   if (arr.length !== 2) throw new Error("TIMEFRAMES must have two values (example: 15m,1h).");
   return [arr[0] ?? "15m", arr[1] ?? "1h"];
+}
+
+function timeframeToMs(timeframe: string): number {
+  const match = timeframe.trim().toLowerCase().match(/^(\d+)([mhdw])$/);
+  if (!match) return 15 * 60_000;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return 15 * 60_000;
+  switch (match[2]) {
+    case "m":
+      return value * 60_000;
+    case "h":
+      return value * 60 * 60_000;
+    case "d":
+      return value * 24 * 60 * 60_000;
+    case "w":
+      return value * 7 * 24 * 60 * 60_000;
+    default:
+      return 15 * 60_000;
+  }
 }
 
 function buildSignalEngine(overrides?: RuntimeOverrides): SignalEngine {
@@ -176,7 +195,9 @@ function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; ove
       liveTrading: config.LIVE_TRADING,
       readOnlyMode: effectiveReadOnlyMode,
       executionStorePath,
-      quoteMaxAgeMs: 5_000,
+      quoteMaxAgeMs: config.EXEC_QUOTE_MAX_AGE_MS,
+      quoteStaleRetryCount: config.EXEC_QUOTE_STALE_RETRY_COUNT,
+      quoteStaleRetryBackoffMs: config.EXEC_QUOTE_STALE_RETRY_BACKOFF_MS,
       riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10)
     },
     persistence
@@ -184,13 +205,25 @@ function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; ove
 }
 
 async function runLoop(bot: BinanceSpotBot, cycles: number, intervalMs: number): Promise<void> {
+  const [fastTimeframe] = parseTimeframes(config.TIMEFRAMES);
+  const fastTimeframeMs = timeframeToMs(fastTimeframe);
+  const align = config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE && config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY;
+  const graceMs = Math.max(0, config.WORKER_CANDLE_CLOSE_GRACE_MS);
+
   let i = 0;
   while (cycles === 0 || i < cycles) {
     i += 1;
     await bot.runCycle();
     logger.info({ event: "cycle_done", cycle: i, report: bot.getReport() });
     if (cycles !== 0 && i >= cycles) break;
-    await sleep(intervalMs);
+    if (!align) {
+      await sleep(intervalMs);
+      continue;
+    }
+    const nowTs = Date.now();
+    const nextClose = Math.floor(nowTs / fastTimeframeMs) * fastTimeframeMs + fastTimeframeMs;
+    const alignedMs = Math.max(250, nextClose + graceMs - nowTs);
+    await sleep(Math.min(Math.max(250, intervalMs), alignedMs));
   }
 }
 
@@ -249,6 +282,12 @@ function logEffectiveRuntimeConfig(
     allocatorMinScoreToInvest: overrides?.allocatorMinScoreToInvest ?? config.ALLOCATOR_MIN_SCORE_TO_INVEST,
     minHoldMinutes: overrides?.minHoldMinutes ?? config.MIN_HOLD_MINUTES,
     evalOnFastCandleCloseOnly: config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY,
+    workerAlignToFastCandleClose: config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE,
+    workerCandleCloseGraceMs: config.WORKER_CANDLE_CLOSE_GRACE_MS,
+    execQuoteMaxAgeMs: config.EXEC_QUOTE_MAX_AGE_MS,
+    execQuoteStaleRetryCount: config.EXEC_QUOTE_STALE_RETRY_COUNT,
+    execQuoteStaleRetryBackoffMs: config.EXEC_QUOTE_STALE_RETRY_BACKOFF_MS,
+    liveEquityReferenceUsdt: config.LIVE_EQUITY_REFERENCE_USDT,
     starvationFastCandlesNoEntry: config.STARVATION_FAST_CANDLES_NO_ENTRY,
     starvationFloors: {
       minEntryScore: config.STARVATION_FLOOR_MIN_ENTRY_SCORE,
@@ -322,6 +361,7 @@ program
       throw new Error("LIVE mode blocked. Set LIVE_TRADING=true explicitly in .env.");
     }
     assertConservativeLiveConfig(config);
+    assertLiveMinNotionalFeasibility(config);
 
     const bot = buildBot({ realAdapter: true, paperSimRealData: false, overrides });
     await runLoop(bot, Number(opts.cycles), Number(opts.intervalMs));

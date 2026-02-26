@@ -1,7 +1,8 @@
 import path from "node:path";
 import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
-import { assertConservativeLiveConfig } from "../infra/liveSafety.js";
+import { sendAlert } from "../infra/alerts.js";
+import { assertConservativeLiveConfig, assertLiveMinNotionalFeasibility } from "../infra/liveSafety.js";
 import { SqlitePersistence } from "../infra/db/persistence.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
@@ -39,12 +40,45 @@ function parseTimeframes(raw: string): [string, string] {
   return [parts[0] ?? "15m", parts[1] ?? "1h"];
 }
 
+function timeframeToMs(timeframe: string): number {
+  const match = timeframe.trim().toLowerCase().match(/^(\d+)([mhdw])$/);
+  if (!match) return 15 * 60_000;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return 15 * 60_000;
+  switch (match[2]) {
+    case "m":
+      return value * 60_000;
+    case "h":
+      return value * 60 * 60_000;
+    case "d":
+      return value * 24 * 60 * 60_000;
+    case "w":
+      return value * 7 * 24 * 60 * 60_000;
+    default:
+      return 15 * 60_000;
+  }
+}
+
 if (config.WORKER_REAL_ADAPTER && !config.LIVE_TRADING && !config.READ_ONLY_MODE) {
   throw new Error("Worker real adapter blocked. Set LIVE_TRADING=true or READ_ONLY_MODE=true in .env.");
 }
 
 if (config.LIVE_TRADING) {
   assertConservativeLiveConfig(config);
+  assertLiveMinNotionalFeasibility(config);
+}
+
+const [fastTimeframe] = parseTimeframes(config.TIMEFRAMES);
+const fastTimeframeMs = timeframeToMs(fastTimeframe);
+
+function computeSleepMs(nowTs: number): number {
+  if (!config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE || !config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY) {
+    return config.WORKER_INTERVAL_MS;
+  }
+  const graceMs = Math.max(0, config.WORKER_CANDLE_CLOSE_GRACE_MS);
+  const nextClose = Math.floor(nowTs / fastTimeframeMs) * fastTimeframeMs + fastTimeframeMs;
+  const aligned = Math.max(250, nextClose + graceMs - nowTs);
+  return Math.min(Math.max(250, config.WORKER_INTERVAL_MS), aligned);
 }
 
 const bot = new BinanceSpotBot(
@@ -121,7 +155,9 @@ const bot = new BinanceSpotBot(
       liveTrading: config.LIVE_TRADING,
       readOnlyMode: config.READ_ONLY_MODE,
       executionStorePath,
-      quoteMaxAgeMs: 5_000,
+      quoteMaxAgeMs: config.EXEC_QUOTE_MAX_AGE_MS,
+      quoteStaleRetryCount: config.EXEC_QUOTE_STALE_RETRY_COUNT,
+      quoteStaleRetryBackoffMs: config.EXEC_QUOTE_STALE_RETRY_BACKOFF_MS,
       riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10)
     },
     persistence
@@ -146,6 +182,12 @@ async function main(): Promise<void> {
     signalExitMomentumMax: config.SIGNAL_EXIT_MOMENTUM_MAX,
     allocatorMinScoreToInvest: config.ALLOCATOR_MIN_SCORE_TO_INVEST,
     evalOnFastCandleCloseOnly: config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY,
+    workerAlignToFastCandleClose: config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE,
+    workerCandleCloseGraceMs: config.WORKER_CANDLE_CLOSE_GRACE_MS,
+    execQuoteMaxAgeMs: config.EXEC_QUOTE_MAX_AGE_MS,
+    execQuoteStaleRetryCount: config.EXEC_QUOTE_STALE_RETRY_COUNT,
+    execQuoteStaleRetryBackoffMs: config.EXEC_QUOTE_STALE_RETRY_BACKOFF_MS,
+    liveEquityReferenceUsdt: config.LIVE_EQUITY_REFERENCE_USDT,
     starvationFastCandlesNoEntry: config.STARVATION_FAST_CANDLES_NO_ENTRY,
     minHoldMinutes: config.MIN_HOLD_MINUTES,
     minNotionalUsdt: config.MIN_NOTIONAL_USDT,
@@ -160,19 +202,36 @@ async function main(): Promise<void> {
     liveRequireConservativeLimits: config.LIVE_REQUIRE_CONSERVATIVE_LIMITS,
     testnetBaseUrlOverrideConfigured: config.BINANCE_TESTNET_BASE_URL.trim().length > 0
   });
+  await sendAlert("worker_started", {
+    liveTrading: config.LIVE_TRADING,
+    realAdapter: config.WORKER_REAL_ADAPTER,
+    symbols: config.SYMBOLS,
+    timeframes: config.TIMEFRAMES
+  });
 
   let cycle = 0;
   while (config.WORKER_MAX_CYCLES === 0 || cycle < config.WORKER_MAX_CYCLES) {
     cycle += 1;
     await bot.runCycle();
     logger.info({ event: "worker_cycle_done", cycle, report: bot.getReport() });
-    await sleep(config.WORKER_INTERVAL_MS);
+    const sleepMs = computeSleepMs(Date.now());
+    logger.info({
+      event: "worker_sleep_scheduled",
+      cycle,
+      sleepMs,
+      alignToFastCandleClose: config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE && config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY
+    });
+    await sleep(sleepMs);
   }
 
   logger.info({ event: "worker_stopped", cycles: cycle, report: bot.getReport() });
+  await sendAlert("worker_stopped", { cycles: cycle, report: bot.getReport() });
 }
 
 main().catch((error: unknown) => {
   logger.error({ err: error }, "Worker crashed");
+  void sendAlert("worker_crashed", {
+    reason: error instanceof Error ? error.message : String(error)
+  });
   process.exitCode = 1;
 });

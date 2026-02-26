@@ -1,11 +1,36 @@
 import { config } from "./config.js";
 import { logger } from "./logger.js";
+import os from "node:os";
+
+type AlertSeverity = "info" | "warning" | "critical";
+
+/**
+ * Heuristically maps runtime event names to alert severity.
+ */
+function inferSeverity(event: string): AlertSeverity {
+  const normalized = event.toLowerCase();
+  if (normalized.includes("crash") || normalized.includes("liquidation") || normalized.includes("kill_switch")) {
+    return "critical";
+  }
+  if (normalized.includes("spike") || normalized.includes("stale") || normalized.includes("fallback")) {
+    return "warning";
+  }
+  return "info";
+}
 
 /**
  * Sends a high-priority runtime alert.
  * Tries Telegram first; if Telegram is not configured or fails, falls back to generic webhook.
  */
 export async function sendAlert(event: string, payload: Record<string, unknown>): Promise<void> {
+  const enrichedPayload = {
+    ...payload,
+    severity: inferSeverity(event),
+    environment: config.NODE_ENV,
+    hostname: os.hostname(),
+    pid: process.pid
+  };
+
   const telegramSent = await sendTelegramAlert(event, payload);
   if (telegramSent) return;
 
@@ -24,7 +49,7 @@ export async function sendAlert(event: string, payload: Record<string, unknown>)
         source: "codex-trading-bot",
         ts: new Date().toISOString(),
         event,
-        payload
+        payload: enrichedPayload
       }),
       signal: controller.signal
     });
@@ -76,12 +101,20 @@ async function sendTelegramAlert(event: string, payload: Record<string, unknown>
   const chatId = config.TELEGRAM_CHAT_ID.trim();
   if (!botToken || !chatId) return false;
 
+  const enrichedPayload = {
+    ...payload,
+    severity: inferSeverity(event),
+    environment: config.NODE_ENV,
+    hostname: os.hostname(),
+    pid: process.pid
+  };
+
   const body: Record<string, unknown> = {
     chat_id: chatId,
     text: [
       "*Codex Trading Alert*",
       `event: \`${escapeTelegramMarkdown(event)}\``,
-      `payload: \`${escapeTelegramMarkdown(toCompactJson(payload))}\``
+      `payload: \`${escapeTelegramMarkdown(toCompactJson(enrichedPayload))}\``
     ].join("\n"),
     parse_mode: "MarkdownV2",
     disable_web_page_preview: true

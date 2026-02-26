@@ -149,6 +149,7 @@ For production deployments, prefer mounting secrets as files and using:
 
 This avoids storing credentials in plain `.env` files inside container images/layers.
 In `NODE_ENV=production`, plaintext env secrets are blocked by default unless `ALLOW_PLAINTEXT_ENV_SECRETS=true`.
+See `docs/SECRETS.md` and `docker-compose.prod.yml` for an end-to-end setup.
 
 ## Operations hardening
 
@@ -166,6 +167,7 @@ In `NODE_ENV=production`, plaintext env secrets are blocked by default unless `A
 - `docs/START_HERE.md`
 - `docs/PRODUCTION_CHECKLIST.md`
 - `docs/INCIDENT_RUNBOOK.md`
+- `docs/SECRETS.md`
 
 ## Auth troubleshooting
 

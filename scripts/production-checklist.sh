@@ -31,8 +31,6 @@ check_required_env() {
   local vars=(
     "SYMBOLS"
     "TIMEFRAMES"
-    "BINANCE_API_KEY"
-    "BINANCE_API_SECRET"
     "BINANCE_TESTNET"
     "LIVE_TRADING"
     "READ_ONLY_MODE"
@@ -43,6 +41,13 @@ check_required_env() {
       missing+=("$key")
     fi
   done
+
+  if ! has_env_var "BINANCE_API_KEY" && ! has_env_var "BINANCE_API_KEY_FILE"; then
+    missing+=("BINANCE_API_KEY or BINANCE_API_KEY_FILE")
+  fi
+  if ! has_env_var "BINANCE_API_SECRET" && ! has_env_var "BINANCE_API_SECRET_FILE"; then
+    missing+=("BINANCE_API_SECRET or BINANCE_API_SECRET_FILE")
+  fi
 
   if (( ${#missing[@]} > 0 )); then
     echo "[error] missing required env vars (.env or process env): ${missing[*]}" >&2

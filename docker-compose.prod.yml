@@ -1,0 +1,73 @@
+version: "3.9"
+
+services:
+  bot:
+    image: node:20-bookworm
+    working_dir: /app
+    command: >
+      bash -lc "corepack enable &&
+      pnpm install --frozen-lockfile &&
+      pnpm dev:worker"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      BINANCE_API_KEY_FILE: /run/secrets/binance_api_key
+      BINANCE_API_SECRET_FILE: /run/secrets/binance_api_secret
+      ALLOW_PLAINTEXT_ENV_SECRETS: "false"
+    secrets:
+      - binance_api_key
+      - binance_api_secret
+    volumes:
+      - ./:/app
+    restart: unless-stopped
+
+  api:
+    image: node:20-bookworm
+    working_dir: /app
+    command: >
+      bash -lc "corepack enable &&
+      pnpm install --frozen-lockfile &&
+      pnpm dev:api"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      BINANCE_API_KEY_FILE: /run/secrets/binance_api_key
+      BINANCE_API_SECRET_FILE: /run/secrets/binance_api_secret
+      ALLOW_PLAINTEXT_ENV_SECRETS: "false"
+    secrets:
+      - binance_api_key
+      - binance_api_secret
+    volumes:
+      - ./:/app
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  watchdog:
+    image: node:20-bookworm
+    working_dir: /app
+    command: >
+      bash -lc "while true; do ./scripts/worker-watchdog.sh; sleep 60; done"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      BINANCE_API_KEY_FILE: /run/secrets/binance_api_key
+      BINANCE_API_SECRET_FILE: /run/secrets/binance_api_secret
+      ALLOW_PLAINTEXT_ENV_SECRETS: "false"
+    secrets:
+      - binance_api_key
+      - binance_api_secret
+    volumes:
+      - ./:/app
+    depends_on:
+      - bot
+    restart: unless-stopped
+
+secrets:
+  binance_api_key:
+    file: ./secrets/binance_api_key.txt
+  binance_api_secret:
+    file: ./secrets/binance_api_secret.txt

@@ -125,6 +125,9 @@ Optional live-adapter integration smoke (requires Binance credentials in env):
 pnpm run test:integration
 ```
 
+Resilience simulation tests (WS reconnect + stale quote fallback) run in:
+- `pnpm run test` (`tests/runtimeResilience.e2e.test.ts`)
+
 Production rollout plan (exact ordered commands):
 
 ```bash

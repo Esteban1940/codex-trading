@@ -152,6 +152,7 @@ This avoids storing credentials in plain `.env` files inside container images/la
 - `docs/TRADING_LOGIC.md`
 - `docs/START_HERE.md`
 - `docs/PRODUCTION_CHECKLIST.md`
+- `docs/INCIDENT_RUNBOOK.md`
 
 ## Auth troubleshooting
 

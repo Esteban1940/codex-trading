@@ -15,6 +15,10 @@ import { InventoryManager } from "../core/inventory/inventoryManager.js";
 import { RiskEngine } from "../core/risk/riskEngine.js";
 import { BinanceSpotBot, type SupportedSymbol } from "../core/trading/binanceSpotBot.js";
 
+/**
+ * Keeps execution-store path next to the configured DB path so worker restarts
+ * can deduplicate orders across process lifecycles.
+ */
 function deriveExecutionStorePath(sqlitePath: string): string {
   const parsed = path.parse(sqlitePath);
   const stem = path.join(parsed.dir, parsed.name || "trading");
@@ -24,6 +28,9 @@ function deriveExecutionStorePath(sqlitePath: string): string {
 const persistence = createPersistence(config);
 const executionStorePath = deriveExecutionStorePath(config.SQLITE_PATH);
 
+/**
+ * Parses and validates supported symbols for this strategy scope.
+ */
 function parseSymbols(raw: string): SupportedSymbol[] {
   const parsed = raw
     .split(",")
@@ -36,12 +43,18 @@ function parseSymbols(raw: string): SupportedSymbol[] {
   return unique as SupportedSymbol[];
 }
 
+/**
+ * Parses fast/slow timeframe tuple from env string.
+ */
 function parseTimeframes(raw: string): [string, string] {
   const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
   if (parts.length !== 2) throw new Error("TIMEFRAMES must include two entries, e.g. 15m,1h");
   return [parts[0] ?? "15m", parts[1] ?? "1h"];
 }
 
+/**
+ * Converts Binance-style timeframe notation to milliseconds.
+ */
 function timeframeToMs(timeframe: string): number {
   const match = timeframe.trim().toLowerCase().match(/^(\d+)([mhdw])$/);
   if (!match) return 15 * 60_000;
@@ -78,6 +91,11 @@ const noTradeMonitor = new NoTradeMonitor({
   alertCooldownCycles: Math.max(1, config.MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES)
 });
 
+/**
+ * Computes worker sleep interval:
+ * - fixed interval mode, or
+ * - aligned mode so each cycle runs just after fast-candle close.
+ */
 function computeSleepMs(nowTs: number): number {
   if (!config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE || !config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY) {
     return Math.max(250, config.WORKER_INTERVAL_MS);
@@ -231,6 +249,8 @@ async function main(): Promise<void> {
   let cycle = 0;
   while (config.WORKER_MAX_CYCLES === 0 || cycle < config.WORKER_MAX_CYCLES) {
     cycle += 1;
+
+    // Run one full decision/execution cycle and snapshot report metrics.
     await bot.runCycle();
     const report = bot.getReport();
     setMetric("worker.cycle", cycle);
@@ -249,6 +269,8 @@ async function main(): Promise<void> {
       logger.warn({ event: "no_trade_reason_spike", ...alert });
       await sendAlert("no_trade_reason_spike", { ...alert });
     }
+
+    // Keep loop pacing deterministic (fixed) or candle-close aligned.
     logger.info({ event: "worker_cycle_done", cycle, report });
     const sleepMs = computeSleepMs(Date.now());
     logger.info({

@@ -1,0 +1,17 @@
+[Unit]
+Description=Codex Trading API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=esteban
+WorkingDirectory=/home/esteban/Documents/repo/codex-trading
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/bash -lc 'corepack enable && pnpm install --frozen-lockfile && pnpm dev:api'
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

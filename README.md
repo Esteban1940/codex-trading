@@ -160,6 +160,7 @@ See `docs/SECRETS.md` and `docker-compose.prod.yml` for an end-to-end setup.
 ```bash
 ./scripts/worker-watchdog.sh
 ```
+- Optional systemd deployment and rollback runbook: `docs/DEPLOY_SYSTEMD.md`.
 
 ## Logic docs
 

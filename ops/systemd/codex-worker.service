@@ -1,0 +1,18 @@
+[Unit]
+Description=Codex Trading Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=esteban
+WorkingDirectory=/home/esteban/Documents/repo/codex-trading
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/bash -lc 'corepack enable && pnpm install --frozen-lockfile && pnpm dev:worker'
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,7 @@ import { sendAlert } from "../infra/alerts.js";
 import { assertConservativeLiveConfig, assertLiveMinNotionalFeasibility } from "../infra/liveSafety.js";
 import { createPersistence } from "../infra/db/factory.js";
 import { setMetric } from "../infra/metrics.js";
+import { NoTradeMonitor } from "../infra/noTradeMonitor.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
 import { MockExchangeAdapter } from "../adapters/mock/mockExchangeAdapter.js";
@@ -71,6 +72,11 @@ if (config.LIVE_TRADING) {
 
 const [fastTimeframe] = parseTimeframes(config.TIMEFRAMES);
 const fastTimeframeMs = timeframeToMs(fastTimeframe);
+const noTradeMonitor = new NoTradeMonitor({
+  windowCycles: Math.max(2, config.MONITOR_NOTRADE_WINDOW_CYCLES),
+  threshold: Math.max(1, config.MONITOR_NOTRADE_ALERT_THRESHOLD),
+  alertCooldownCycles: Math.max(1, config.MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES)
+});
 
 function computeSleepMs(nowTs: number): number {
   if (!config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE || !config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY) {
@@ -198,6 +204,9 @@ async function main(): Promise<void> {
     maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
     maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
     riskMarketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT,
+    monitorNoTradeWindowCycles: config.MONITOR_NOTRADE_WINDOW_CYCLES,
+    monitorNoTradeAlertThreshold: config.MONITOR_NOTRADE_ALERT_THRESHOLD,
+    monitorNoTradeAlertCooldownCycles: config.MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES,
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     readOnlyMode: config.READ_ONLY_MODE,
@@ -230,6 +239,12 @@ async function main(): Promise<void> {
     setMetric("worker.notrade.btc.insufficient_edge", report.noTradeReasonCounts["BTC/USDT"].insufficient_edge);
     setMetric("worker.notrade.eth.insufficient_score", report.noTradeReasonCounts["ETH/USDT"].insufficient_score);
     setMetric("worker.notrade.eth.insufficient_edge", report.noTradeReasonCounts["ETH/USDT"].insufficient_edge);
+    const noTradeAlerts = noTradeMonitor.evaluate(report, cycle);
+    setMetric("worker.notrade.alerts_triggered", noTradeAlerts.length);
+    for (const alert of noTradeAlerts) {
+      logger.warn({ event: "no_trade_reason_spike", ...alert });
+      await sendAlert("no_trade_reason_spike", { ...alert });
+    }
     logger.info({ event: "worker_cycle_done", cycle, report });
     const sleepMs = computeSleepMs(Date.now());
     logger.info({

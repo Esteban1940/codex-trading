@@ -156,7 +156,10 @@ const envSchema = z.object({
   EXEC_QUOTE_MAX_AGE_MS: z.coerce.number().default(5000),
   EXEC_QUOTE_STALE_RETRY_COUNT: z.coerce.number().default(2),
   EXEC_QUOTE_STALE_RETRY_BACKOFF_MS: z.coerce.number().default(250),
-  LIVE_EQUITY_REFERENCE_USDT: z.coerce.number().default(0)
+  LIVE_EQUITY_REFERENCE_USDT: z.coerce.number().default(0),
+  MONITOR_NOTRADE_WINDOW_CYCLES: z.coerce.number().default(30),
+  MONITOR_NOTRADE_ALERT_THRESHOLD: z.coerce.number().default(20),
+  MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES: z.coerce.number().default(10)
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

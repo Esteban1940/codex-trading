@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
 import { sendAlert } from "../infra/alerts.js";
@@ -20,7 +21,7 @@ import { BinanceSpotBot, type BotReport, type SupportedSymbol } from "../core/tr
  * Keeps execution-store path next to the configured DB path so worker restarts
  * can deduplicate orders across process lifecycles.
  */
-function deriveExecutionStorePath(sqlitePath: string): string {
+export function deriveExecutionStorePath(sqlitePath: string): string {
   const parsed = path.parse(sqlitePath);
   const stem = path.join(parsed.dir, parsed.name || "trading");
   return `${stem}.execution-store.json`;
@@ -32,7 +33,7 @@ const executionStorePath = deriveExecutionStorePath(config.SQLITE_PATH);
 /**
  * Parses and validates supported symbols for this strategy scope.
  */
-function parseSymbols(raw: string): SupportedSymbol[] {
+export function parseSymbols(raw: string): SupportedSymbol[] {
   const parsed = raw
     .split(",")
     .map((s) => s.trim().toUpperCase())
@@ -47,7 +48,7 @@ function parseSymbols(raw: string): SupportedSymbol[] {
 /**
  * Parses fast/slow timeframe tuple from env string.
  */
-function parseTimeframes(raw: string): [string, string] {
+export function parseTimeframes(raw: string): [string, string] {
   const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
   if (parts.length !== 2) throw new Error("TIMEFRAMES must include two entries, e.g. 15m,1h");
   return [parts[0] ?? "15m", parts[1] ?? "1h"];
@@ -56,7 +57,7 @@ function parseTimeframes(raw: string): [string, string] {
 /**
  * Converts Binance-style timeframe notation to milliseconds.
  */
-function timeframeToMs(timeframe: string): number {
+export function timeframeToMs(timeframe: string): number {
   const match = timeframe.trim().toLowerCase().match(/^(\d+)([mhdw])$/);
   if (!match) return 15 * 60_000;
   const value = Number(match[1]);
@@ -99,7 +100,7 @@ let shutdownSignal = "";
  * - fixed interval mode, or
  * - aligned mode so each cycle runs just after fast-candle close.
  */
-function computeSleepMs(nowTs: number): number {
+export function computeSleepMs(nowTs: number): number {
   if (!config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE || !config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY) {
     return Math.max(250, config.WORKER_INTERVAL_MS);
   }
@@ -132,14 +133,14 @@ async function writeHeartbeat(cycle: number): Promise<void> {
 /**
  * Returns canonical UTC day key (YYYY-MM-DD).
  */
-function utcDayKey(ts: number): string {
+export function utcDayKey(ts: number): string {
   return new Date(ts).toISOString().slice(0, 10);
 }
 
 /**
  * Builds a compact daily risk summary payload for Telegram/webhook alerts.
  */
-function buildDailyRiskReport(report: BotReport, cycle: number, dayKey: string): Record<string, unknown> {
+export function buildDailyRiskReport(report: BotReport, cycle: number, dayKey: string): Record<string, unknown> {
   return {
     dayKey,
     cycle,
@@ -239,7 +240,7 @@ const bot = new BinanceSpotBot(
     persistence
   );
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const requestShutdown = (signal: NodeJS.Signals): void => {
     if (shutdownRequested) return;
     shutdownRequested = true;
@@ -362,10 +363,12 @@ async function main(): Promise<void> {
   await sendAlert("worker_stopped", { cycles: cycle, shutdownSignal, report: bot.getReport() });
 }
 
-main().catch((error: unknown) => {
-  logger.error({ err: error }, "Worker crashed");
-  void sendAlert("worker_crashed", {
-    reason: error instanceof Error ? error.message : String(error)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    logger.error({ err: error }, "Worker crashed");
+    void sendAlert("worker_crashed", {
+      reason: error instanceof Error ? error.message : String(error)
+    });
+    process.exitCode = 1;
   });
-  process.exitCode = 1;
-});
+}

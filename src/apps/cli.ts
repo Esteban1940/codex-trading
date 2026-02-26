@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
@@ -37,7 +38,7 @@ interface RuntimeOverrides {
 /**
  * Stores order idempotency state close to DB path so reruns can reuse it.
  */
-function deriveExecutionStorePath(sqlitePath: string): string {
+export function deriveExecutionStorePath(sqlitePath: string): string {
   const parsed = path.parse(sqlitePath);
   const stem = path.join(parsed.dir, parsed.name || "trading");
   return `${stem}.execution-store.json`;
@@ -46,7 +47,7 @@ function deriveExecutionStorePath(sqlitePath: string): string {
 /**
  * Parses and enforces the restricted symbol universe for this bot.
  */
-function parseSymbols(raw: string): SupportedSymbol[] {
+export function parseSymbols(raw: string): SupportedSymbol[] {
   const parsed = raw
     .split(",")
     .map((s) => s.trim().toUpperCase())
@@ -69,7 +70,7 @@ function parseSymbols(raw: string): SupportedSymbol[] {
 /**
  * Parses fast/slow timeframe pair from env/CLI configuration.
  */
-function parseTimeframes(raw: string): [string, string] {
+export function parseTimeframes(raw: string): [string, string] {
   const arr = raw
     .split(",")
     .map((s) => s.trim())
@@ -81,7 +82,7 @@ function parseTimeframes(raw: string): [string, string] {
 /**
  * Converts textual timeframe (15m, 1h, etc.) into milliseconds.
  */
-function timeframeToMs(timeframe: string): number {
+export function timeframeToMs(timeframe: string): number {
   const match = timeframe.trim().toLowerCase().match(/^(\d+)([mhdw])$/);
   if (!match) return 15 * 60_000;
   const value = Number(match[1]);
@@ -103,7 +104,7 @@ function timeframeToMs(timeframe: string): number {
 /**
  * Builds signal engine using base config and optional runtime profile overrides.
  */
-function buildSignalEngine(overrides?: RuntimeOverrides): SignalEngine {
+export function buildSignalEngine(overrides?: RuntimeOverrides): SignalEngine {
   return new SignalEngine({
     emaFast: config.SIGNAL_EMA_FAST,
     emaSlow: config.SIGNAL_EMA_SLOW,
@@ -128,7 +129,7 @@ function buildSignalEngine(overrides?: RuntimeOverrides): SignalEngine {
 /**
  * Builds allocator using optional profile-specific score threshold.
  */
-function buildAllocator(overrides?: RuntimeOverrides): PortfolioAllocator {
+export function buildAllocator(overrides?: RuntimeOverrides): PortfolioAllocator {
   return new PortfolioAllocator({
     maxExposureTotal: config.ALLOCATOR_MAX_EXPOSURE_TOTAL,
     maxExposurePerSymbol: config.ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL,
@@ -140,7 +141,7 @@ function buildAllocator(overrides?: RuntimeOverrides): PortfolioAllocator {
 /**
  * Builds inventory manager with execution defaults.
  */
-function buildInventory(): InventoryManager {
+export function buildInventory(): InventoryManager {
   return new InventoryManager({
     feeBps: config.DEFAULT_FEE_BPS,
     minNotionalUsdt: config.MIN_NOTIONAL_USDT,
@@ -151,7 +152,7 @@ function buildInventory(): InventoryManager {
 /**
  * Builds risk engine with optional profile-specific daily trade cap.
  */
-function buildRiskEngine(overrides?: RuntimeOverrides): RiskEngine {
+export function buildRiskEngine(overrides?: RuntimeOverrides): RiskEngine {
   return new RiskEngine({
     liveTrading: config.LIVE_TRADING,
     killSwitch: config.KILL_SWITCH,
@@ -172,7 +173,7 @@ function buildRiskEngine(overrides?: RuntimeOverrides): RiskEngine {
 /**
  * Assembles the full bot stack for selected mode (mock, real-adapter, paper-sim-real-data).
  */
-function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; overrides?: RuntimeOverrides }): BinanceSpotBot {
+export function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; overrides?: RuntimeOverrides }): BinanceSpotBot {
   const symbols = parseSymbols(config.SYMBOLS);
   const timeframes = parseTimeframes(config.TIMEFRAMES);
 
@@ -237,7 +238,7 @@ function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; ove
 /**
  * Runs cycle loop with either fixed interval or candle-close aligned pacing.
  */
-async function runLoop(bot: BinanceSpotBot, cycles: number, intervalMs: number): Promise<void> {
+export async function runLoop(bot: BinanceSpotBot, cycles: number, intervalMs: number): Promise<void> {
   const [fastTimeframe] = parseTimeframes(config.TIMEFRAMES);
   const fastTimeframeMs = timeframeToMs(fastTimeframe);
   const align = config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE && config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY;
@@ -262,7 +263,7 @@ async function runLoop(bot: BinanceSpotBot, cycles: number, intervalMs: number):
 /**
  * Resolves runtime profile alias/name to concrete override values.
  */
-function resolveProfile(raw: string): RuntimeOverrides {
+export function resolveProfile(raw: string): RuntimeOverrides {
   const profile = raw.trim().toLowerCase();
   if (profile === "production-conservative") return { profileName: "production-conservative" };
 
@@ -296,7 +297,7 @@ function resolveProfile(raw: string): RuntimeOverrides {
 /**
  * Logs the effective runtime configuration to simplify audits and incident triage.
  */
-function logEffectiveRuntimeConfig(
+export function logEffectiveRuntimeConfig(
   mode: "paper" | "live",
   overrides?: RuntimeOverrides,
   paperSimRealData?: boolean
@@ -356,15 +357,15 @@ function logEffectiveRuntimeConfig(
   });
 }
 
-const program = new Command();
+export function buildProgram(): Command {
+  const program = new Command();
+  program
+    .name("codex-trading")
+    .description("Binance Spot BTC/ETH bot (USDT base)")
+    .showHelpAfterError();
 
-program
-  .name("codex-trading")
-  .description("Binance Spot BTC/ETH bot (USDT base)")
-  .showHelpAfterError();
-
-program
-  .command("paper")
+  program
+    .command("paper")
   .option("--cycles <number>", "Number of cycles", "1")
   .option("--interval-ms <number>", "Interval between cycles", String(config.WORKER_INTERVAL_MS))
   .option("--real-adapter", "Use Binance adapter (testnet/mainnet based on env)", false)
@@ -375,76 +376,86 @@ program
   )
   .option("--profile <name>", "Runtime profile: paper-validation|production-conservative", "production-conservative")
   .option("--paper-profile <name>", "Deprecated alias for --profile", "")
-  .action(async (opts) => {
-    if (Boolean(opts.realAdapter) && !config.BINANCE_TESTNET && !config.LIVE_TRADING && !config.READ_ONLY_MODE) {
-      throw new Error("paper --real-adapter blocked on mainnet. Set LIVE_TRADING=true or enable BINANCE_TESTNET=true.");
-    }
-    const aliasProfile = String(opts.paperProfile ?? "").trim();
-    const profileInput = aliasProfile.length > 0 ? aliasProfile : String(opts.profile ?? "production-conservative");
-    const overrides = resolveProfile(profileInput);
-    const paperSimRealData = Boolean(opts.paperSimRealData);
-    logEffectiveRuntimeConfig("paper", overrides, paperSimRealData);
-    const bot = buildBot({
-      realAdapter: Boolean(opts.realAdapter) || paperSimRealData,
-      paperSimRealData,
-      overrides
+    .action(async (opts) => {
+      if (Boolean(opts.realAdapter) && !config.BINANCE_TESTNET && !config.LIVE_TRADING && !config.READ_ONLY_MODE) {
+        throw new Error("paper --real-adapter blocked on mainnet. Set LIVE_TRADING=true or enable BINANCE_TESTNET=true.");
+      }
+      const aliasProfile = String(opts.paperProfile ?? "").trim();
+      const profileInput = aliasProfile.length > 0 ? aliasProfile : String(opts.profile ?? "production-conservative");
+      const overrides = resolveProfile(profileInput);
+      const paperSimRealData = Boolean(opts.paperSimRealData);
+      logEffectiveRuntimeConfig("paper", overrides, paperSimRealData);
+      const bot = buildBot({
+        realAdapter: Boolean(opts.realAdapter) || paperSimRealData,
+        paperSimRealData,
+        overrides
+      });
+      await runLoop(bot, Number(opts.cycles), Number(opts.intervalMs));
+      logger.info({ event: "paper_done", report: bot.getReport() });
     });
-    await runLoop(bot, Number(opts.cycles), Number(opts.intervalMs));
-    logger.info({ event: "paper_done", report: bot.getReport() });
-  });
 
-program
-  .command("live")
+  program
+    .command("live")
   .option("--cycles <number>", "Number of cycles (0=infinite)", "0")
   .option("--interval-ms <number>", "Interval between cycles", String(config.WORKER_INTERVAL_MS))
   .option("--profile <name>", "Runtime profile: production-conservative", "production-conservative")
-  .action(async (opts) => {
-    const profile = String(opts.profile ?? "production-conservative");
-    if (profile !== "production-conservative") {
-      throw new Error("live supports only --profile production-conservative.");
-    }
-    const overrides = resolveProfile(profile);
-    logEffectiveRuntimeConfig("live", overrides);
-    if (!config.LIVE_TRADING) {
-      throw new Error("LIVE mode blocked. Set LIVE_TRADING=true explicitly in .env.");
-    }
-    assertConservativeLiveConfig(config);
-    assertLiveMinNotionalFeasibility(config);
+    .action(async (opts) => {
+      const profile = String(opts.profile ?? "production-conservative");
+      if (profile !== "production-conservative") {
+        throw new Error("live supports only --profile production-conservative.");
+      }
+      const overrides = resolveProfile(profile);
+      logEffectiveRuntimeConfig("live", overrides);
+      if (!config.LIVE_TRADING) {
+        throw new Error("LIVE mode blocked. Set LIVE_TRADING=true explicitly in .env.");
+      }
+      assertConservativeLiveConfig(config);
+      assertLiveMinNotionalFeasibility(config);
 
-    const bot = buildBot({ realAdapter: true, paperSimRealData: false, overrides });
-    await runLoop(bot, Number(opts.cycles), Number(opts.intervalMs));
-    logger.info({ event: "live_done", report: bot.getReport() });
-  });
+      const bot = buildBot({ realAdapter: true, paperSimRealData: false, overrides });
+      await runLoop(bot, Number(opts.cycles), Number(opts.intervalMs));
+      logger.info({ event: "live_done", report: bot.getReport() });
+    });
 
-program
-  .command("backtest")
+  program
+    .command("backtest")
   .requiredOption("--btc-csv <path>", "BTC/USDT 15m CSV")
   .requiredOption("--eth-csv <path>", "ETH/USDT 15m CSV")
   .option("--initial-usdt <number>", "Initial USDT", "10000")
   .option("--report-json <path>", "Write backtest metrics as JSON file")
-  .action(async (opts) => {
-    const btc = loadCandlesFromCsv(opts.btcCsv);
-    const eth = loadCandlesFromCsv(opts.ethCsv);
+    .action(async (opts) => {
+      const btc = loadCandlesFromCsv(opts.btcCsv);
+      const eth = loadCandlesFromCsv(opts.ethCsv);
 
-    const tester = new TwoSymbolBacktester(buildSignalEngine(), buildAllocator(), buildInventory());
-    const report = tester.run(btc, eth, {
-      initialUsdt: Number(opts.initialUsdt),
-      feeBps: config.DEFAULT_FEE_BPS,
-      slippageBps: config.DEFAULT_SLIPPAGE_BPS,
-      barsPerDay: 96
+      const tester = new TwoSymbolBacktester(buildSignalEngine(), buildAllocator(), buildInventory());
+      const report = tester.run(btc, eth, {
+        initialUsdt: Number(opts.initialUsdt),
+        feeBps: config.DEFAULT_FEE_BPS,
+        slippageBps: config.DEFAULT_SLIPPAGE_BPS,
+        barsPerDay: 96
+      });
+
+      const reportJsonPath = String(opts.reportJson ?? "").trim();
+      if (reportJsonPath.length > 0) {
+        const absolutePath = path.resolve(reportJsonPath);
+        await fs.writeFile(absolutePath, JSON.stringify(report, null, 2), "utf-8");
+        logger.info({ event: "backtest_report_json_written", path: absolutePath });
+      }
+
+      logger.info({ event: "backtest_done", report });
     });
 
-    const reportJsonPath = String(opts.reportJson ?? "").trim();
-    if (reportJsonPath.length > 0) {
-      const absolutePath = path.resolve(reportJsonPath);
-      await fs.writeFile(absolutePath, JSON.stringify(report, null, 2), "utf-8");
-      logger.info({ event: "backtest_report_json_written", path: absolutePath });
-    }
+  return program;
+}
 
-    logger.info({ event: "backtest_done", report });
+export async function runCli(argv = process.argv): Promise<void> {
+  const program = buildProgram();
+  await program.parseAsync(argv);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runCli().catch((error: unknown) => {
+    logger.error({ err: error }, "CLI failed");
+    process.exitCode = 1;
   });
-
-program.parseAsync(process.argv).catch((error: unknown) => {
-  logger.error({ err: error }, "CLI failed");
-  process.exitCode = 1;
-});
+}

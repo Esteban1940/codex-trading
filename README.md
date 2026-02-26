@@ -116,6 +116,7 @@ Paper/backtest report:
 
 ```bash
 pnpm run preflight
+pnpm run test:coverage
 ```
 
 Optional live-adapter integration smoke (requires Binance credentials in env):

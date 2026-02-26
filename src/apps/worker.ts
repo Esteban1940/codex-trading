@@ -3,7 +3,7 @@ import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
 import { sendAlert } from "../infra/alerts.js";
 import { assertConservativeLiveConfig, assertLiveMinNotionalFeasibility } from "../infra/liveSafety.js";
-import { SqlitePersistence } from "../infra/db/persistence.js";
+import { createPersistence } from "../infra/db/factory.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
 import { MockExchangeAdapter } from "../adapters/mock/mockExchangeAdapter.js";
@@ -19,7 +19,7 @@ function deriveExecutionStorePath(sqlitePath: string): string {
   return `${stem}.execution-store.json`;
 }
 
-const persistence = new SqlitePersistence(config.SQLITE_PATH);
+const persistence = createPersistence(config);
 const executionStorePath = deriveExecutionStorePath(config.SQLITE_PATH);
 
 function parseSymbols(raw: string): SupportedSymbol[] {
@@ -200,7 +200,11 @@ async function main(): Promise<void> {
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     readOnlyMode: config.READ_ONLY_MODE,
     liveRequireConservativeLimits: config.LIVE_REQUIRE_CONSERVATIVE_LIMITS,
-    testnetBaseUrlOverrideConfigured: config.BINANCE_TESTNET_BASE_URL.trim().length > 0
+    persistenceBackend: config.PERSISTENCE_BACKEND,
+    testnetBaseUrlOverrideConfigured: config.BINANCE_TESTNET_BASE_URL.trim().length > 0,
+    binanceUseWsQuotes: config.BINANCE_USE_WS_QUOTES,
+    binanceWsQuoteStaleMs: config.BINANCE_WS_QUOTE_STALE_MS,
+    telegramAlertsConfigured: config.TELEGRAM_BOT_TOKEN.trim().length > 0 && config.TELEGRAM_CHAT_ID.trim().length > 0
   });
   await sendAlert("worker_started", {
     liveTrading: config.LIVE_TRADING,

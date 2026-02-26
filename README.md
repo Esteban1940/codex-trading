@@ -30,6 +30,7 @@ Required env values:
 - `BINANCE_API_KEY`, `BINANCE_API_SECRET`
 - Optional production secret files: `BINANCE_API_KEY_FILE`, `BINANCE_API_SECRET_FILE` (preferred in Docker/runtime secret mounts)
 - `BINANCE_TESTNET=false` by default for mainnet read-only smoke tests (`READ_ONLY_MODE=true`)
+- Binance quote feed uses WebSocket by default (`BINANCE_USE_WS_QUOTES=true`) with REST fallback
 - `PAPER_INITIAL_USDT` to mirror your paper account size (example `94`)
 - `MIN_NOTIONAL_USDT` to enforce min order notional (default `10`)
 - Ensure `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equity >= MIN_NOTIONAL_USDT` (for ~94 USDT, use at least `0.11` per symbol)
@@ -37,7 +38,8 @@ Required env values:
 - Live conservative limits are validated at startup (`LIVE_REQUIRE_CONSERVATIVE_LIMITS=true`)
 - Quote freshness and retries are configurable (`EXEC_QUOTE_MAX_AGE_MS`, `EXEC_QUOTE_STALE_RETRY_COUNT`, `EXEC_QUOTE_STALE_RETRY_BACKOFF_MS`)
 - Worker can align loops to fast candle close (`WORKER_ALIGN_TO_FAST_CANDLE_CLOSE=true`, `WORKER_CANDLE_CLOSE_GRACE_MS=1500`)
-- Optional webhook alerts: `ALERT_WEBHOOK_URL`
+- Telegram alerts (recommended): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (optional `TELEGRAM_THREAD_ID`)
+- Optional generic webhook fallback: `ALERT_WEBHOOK_URL`
 
 ## Commands
 

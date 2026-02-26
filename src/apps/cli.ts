@@ -4,7 +4,7 @@ import { Command } from "commander";
 import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
 import { assertConservativeLiveConfig, assertLiveMinNotionalFeasibility } from "../infra/liveSafety.js";
-import { SqlitePersistence } from "../infra/db/persistence.js";
+import { createPersistence } from "../infra/db/factory.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
 import { PaperSimRealDataAdapter } from "../adapters/crypto/paperSimRealDataAdapter.js";
@@ -157,7 +157,7 @@ function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; ove
       })
     : baseAdapter;
   const effectiveReadOnlyMode = params.paperSimRealData ? false : config.READ_ONLY_MODE;
-  const persistence = new SqlitePersistence(config.SQLITE_PATH);
+  const persistence = createPersistence(config);
   const executionStorePath = deriveExecutionStorePath(config.SQLITE_PATH);
 
   return new BinanceSpotBot(
@@ -304,7 +304,11 @@ function logEffectiveRuntimeConfig(
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     readOnlyMode: paperSimRealData ? false : config.READ_ONLY_MODE,
     liveRequireConservativeLimits: config.LIVE_REQUIRE_CONSERVATIVE_LIMITS,
-    testnetBaseUrlOverrideConfigured: config.BINANCE_TESTNET_BASE_URL.trim().length > 0
+    persistenceBackend: config.PERSISTENCE_BACKEND,
+    testnetBaseUrlOverrideConfigured: config.BINANCE_TESTNET_BASE_URL.trim().length > 0,
+    binanceUseWsQuotes: config.BINANCE_USE_WS_QUOTES,
+    binanceWsQuoteStaleMs: config.BINANCE_WS_QUOTE_STALE_MS,
+    telegramAlertsConfigured: config.TELEGRAM_BOT_TOKEN.trim().length > 0 && config.TELEGRAM_CHAT_ID.trim().length > 0
   });
 }
 

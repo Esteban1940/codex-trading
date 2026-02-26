@@ -106,6 +106,7 @@ const envSchema = z.object({
 
   SQLITE_PATH: z.string().default("./data/trading.db"),
   POSTGRES_URL: z.string().default("postgresql://trader:trader@localhost:5432/trading"),
+  PERSISTENCE_BACKEND: z.enum(["sqlite", "postgres", "none"]).default("sqlite"),
 
   IOL_BASE_URL: z.string().default("https://api.invertironline.com"),
   IOL_SANDBOX_BASE_URL: z.string().default("https://api.invertironline.com"),
@@ -124,8 +125,16 @@ const envSchema = z.object({
   BINANCE_TESTNET: z.string().default("false").transform((v) => v === "true"),
   BINANCE_TESTNET_BASE_URL: z.string().default(""),
   BINANCE_ENABLE_WITHDRAWALS: z.string().default("false").transform((v) => v === "true"),
+  BINANCE_USE_WS_QUOTES: z.string().default("true").transform((v) => v === "true"),
+  BINANCE_WS_MAINNET_URL: z.string().default("wss://stream.binance.com:9443/stream"),
+  BINANCE_WS_TESTNET_URL: z.string().default("wss://stream.testnet.binance.vision/stream"),
+  BINANCE_WS_RECONNECT_MS: z.coerce.number().default(2000),
+  BINANCE_WS_QUOTE_STALE_MS: z.coerce.number().default(8000),
   ALERT_WEBHOOK_URL: z.string().default(""),
   ALERT_WEBHOOK_TIMEOUT_MS: z.coerce.number().default(3000),
+  TELEGRAM_BOT_TOKEN: z.string().default(""),
+  TELEGRAM_CHAT_ID: z.string().default(""),
+  TELEGRAM_THREAD_ID: z.string().default(""),
 
   SYMBOLS: z.string().default("BTC/USDT,ETH/USDT"),
   TIMEFRAMES: z.string().default("15m,1h"),

@@ -3,6 +3,7 @@ import type { AccountSnapshot, Candle, Order, OrderFee, PlaceOrderRequest, Posit
 import { withRetry } from "../../infra/retry.js";
 import { config } from "../../infra/config.js";
 import { logger } from "../../infra/logger.js";
+import { BinanceWsQuoteFeed } from "./binanceWsQuoteFeed.js";
 import {
   createBinanceClient,
   validateBinanceKeySecurity,
@@ -148,6 +149,7 @@ export class BinanceAdapter implements ExchangeAdapter {
   private initialized = false;
   private activeTestnet = config.BINANCE_TESTNET;
   private networkFallbackAttempted = false;
+  private quoteFeed?: BinanceWsQuoteFeed;
 
   private assertOrderPlacementAllowed(): void {
     if (!this.activeTestnet && !config.LIVE_TRADING) {
@@ -160,9 +162,22 @@ export class BinanceAdapter implements ExchangeAdapter {
   }
 
   private switchNetwork(testnet: boolean): void {
+    this.quoteFeed?.stop();
+    this.quoteFeed = undefined;
     this.exchange = createBinanceClient(testnet);
     this.activeTestnet = testnet;
     this.initialized = false;
+  }
+
+  private startQuoteFeedIfEnabled(): void {
+    if (!config.BINANCE_USE_WS_QUOTES) return;
+    if (this.quoteFeed) return;
+
+    this.quoteFeed = new BinanceWsQuoteFeed({
+      url: this.activeTestnet ? config.BINANCE_WS_TESTNET_URL : config.BINANCE_WS_MAINNET_URL,
+      reconnectMs: config.BINANCE_WS_RECONNECT_MS
+    });
+    this.quoteFeed.start();
   }
 
   private shouldAttemptNetworkFallback(error: unknown): boolean {
@@ -211,6 +226,7 @@ export class BinanceAdapter implements ExchangeAdapter {
       }
     }
 
+    this.startQuoteFeedIfEnabled();
     this.initialized = true;
   }
 
@@ -512,6 +528,23 @@ export class BinanceAdapter implements ExchangeAdapter {
 
   async getQuote(symbol: string): Promise<Quote> {
     await this.ensureInit();
+    const supported = symbol === "BTC/USDT" || symbol === "ETH/USDT" ? symbol : undefined;
+    if (supported && this.quoteFeed) {
+      const snapshot = this.quoteFeed.getQuote(supported);
+      if (snapshot) {
+        const ageMs = Date.now() - snapshot.ts;
+        if (ageMs <= Math.max(1000, config.BINANCE_WS_QUOTE_STALE_MS)) {
+          return {
+            symbol,
+            bid: snapshot.bid,
+            ask: snapshot.ask,
+            last: snapshot.last,
+            ts: snapshot.ts
+          };
+        }
+      }
+    }
+
     const ticker = asTickerPayload(await this.callExchange("fetchTicker", () => this.exchange.fetchTicker(symbol)));
     return {
       symbol,

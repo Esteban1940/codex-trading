@@ -1,4 +1,5 @@
 import path from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import { config } from "../infra/config.js";
 import { logger } from "../infra/logger.js";
 import { sendAlert } from "../infra/alerts.js";
@@ -103,6 +104,27 @@ function computeSleepMs(nowTs: number): number {
   const graceMs = Math.max(0, config.WORKER_CANDLE_CLOSE_GRACE_MS);
   const nextClose = Math.floor(nowTs / fastTimeframeMs) * fastTimeframeMs + fastTimeframeMs;
   return Math.max(250, nextClose + graceMs - nowTs);
+}
+
+/**
+ * Persists a heartbeat timestamp for external watchdogs.
+ */
+async function writeHeartbeat(cycle: number): Promise<void> {
+  const heartbeatPath = config.WORKER_HEARTBEAT_FILE;
+  const heartbeatDir = path.dirname(heartbeatPath);
+  await mkdir(heartbeatDir, { recursive: true });
+  await writeFile(
+    heartbeatPath,
+    JSON.stringify(
+      {
+        ts: Date.now(),
+        cycle
+      },
+      null,
+      2
+    ),
+    "utf-8"
+  );
 }
 
 const bot = new BinanceSpotBot(
@@ -269,6 +291,7 @@ async function main(): Promise<void> {
       logger.warn({ event: "no_trade_reason_spike", ...alert });
       await sendAlert("no_trade_reason_spike", { ...alert });
     }
+    await writeHeartbeat(cycle);
 
     // Keep loop pacing deterministic (fixed) or candle-close aligned.
     logger.info({ event: "worker_cycle_done", cycle, report });

@@ -138,6 +138,7 @@ CI is configured in `.github/workflows/ci.yml` and runs the same checks on every
 Nightly integration smoke is configured in `.github/workflows/nightly-integration.yml`.
 
 Runtime metrics are exposed at `GET /status` (via `pnpm dev:api`).
+Worker heartbeats are written to `WORKER_HEARTBEAT_FILE` for external watchdog checks.
 
 ## Docker secrets
 
@@ -146,6 +147,17 @@ For production deployments, prefer mounting secrets as files and using:
 - `BINANCE_API_SECRET_FILE`
 
 This avoids storing credentials in plain `.env` files inside container images/layers.
+In `NODE_ENV=production`, plaintext env secrets are blocked by default unless `ALLOW_PLAINTEXT_ENV_SECRETS=true`.
+
+## Operations hardening
+
+- `docker-compose.yml` includes restart policies and log rotation for bot/api/watchdog/postgres.
+- API container has healthcheck on `GET /health`.
+- Watchdog script validates worker heartbeat and can alert via Telegram:
+
+```bash
+./scripts/worker-watchdog.sh
+```
 
 ## Logic docs
 

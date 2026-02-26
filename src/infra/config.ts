@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 
 /**
@@ -14,6 +15,7 @@ function readSecretFromFile(pathValue: string): string {
  */
 function applyFileBackedSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out = { ...env };
+  if (!out.NODE_ENV) out.NODE_ENV = "development";
   const fileBackedKeys: Array<{ valueKey: keyof NodeJS.ProcessEnv; fileKey: keyof NodeJS.ProcessEnv }> = [
     { valueKey: "BINANCE_API_KEY", fileKey: "BINANCE_API_KEY_FILE" },
     { valueKey: "BINANCE_API_SECRET", fileKey: "BINANCE_API_SECRET_FILE" },
@@ -26,6 +28,21 @@ function applyFileBackedSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     const pathValue = out[pair.fileKey];
     if (!pathValue || String(pathValue).trim().length === 0) continue;
     out[pair.valueKey] = readSecretFromFile(String(pathValue));
+  }
+
+  // In production, force file-backed secrets unless explicitly bypassed.
+  if (out.NODE_ENV === "production" && out.ALLOW_PLAINTEXT_ENV_SECRETS !== "true") {
+    const requiredSecretFiles: Array<keyof NodeJS.ProcessEnv> = [
+      "BINANCE_API_KEY_FILE",
+      "BINANCE_API_SECRET_FILE"
+    ];
+    for (const secretFileKey of requiredSecretFiles) {
+      if (!out[secretFileKey] || String(out[secretFileKey]).trim().length === 0) {
+        throw new Error(
+          `Missing ${String(secretFileKey)} in production. Use file-backed secrets or set ALLOW_PLAINTEXT_ENV_SECRETS=true for controlled exceptions.`
+        );
+      }
+    }
   }
 
   return out;
@@ -155,6 +172,7 @@ const envSchema = z.object({
   WORKER_REAL_ADAPTER: z.string().default("false").transform((v) => v === "true"),
   WORKER_ALIGN_TO_FAST_CANDLE_CLOSE: z.string().default("true").transform((v) => v === "true"),
   WORKER_CANDLE_CLOSE_GRACE_MS: z.coerce.number().default(1500),
+  WORKER_HEARTBEAT_FILE: z.string().default(path.join(".runtime", "worker-heartbeat.json")),
   EXEC_QUOTE_MAX_AGE_MS: z.coerce.number().default(5000),
   EXEC_QUOTE_STALE_RETRY_COUNT: z.coerce.number().default(2),
   EXEC_QUOTE_STALE_RETRY_BACKOFF_MS: z.coerce.number().default(250),

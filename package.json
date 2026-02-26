@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "vitest run",
+    "test:integration": "RUN_BINANCE_INTEGRATION=true vitest run tests/binanceIntegration.test.ts",
     "test:watch": "vitest",
     "dev:paper": "tsx src/apps/cli.ts paper",
     "backtest": "tsx src/apps/cli.ts backtest",

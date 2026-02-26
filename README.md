@@ -118,7 +118,14 @@ pnpm run lint
 pnpm run test
 ```
 
+Optional live-adapter integration smoke (requires Binance credentials in env):
+
+```bash
+pnpm run test:integration
+```
+
 CI is configured in `.github/workflows/ci.yml` and runs the same checks on every pull request and push to `main`.
+Nightly integration smoke is configured in `.github/workflows/nightly-integration.yml`.
 
 Runtime metrics are exposed at `GET /status` (via `pnpm dev:api`).
 

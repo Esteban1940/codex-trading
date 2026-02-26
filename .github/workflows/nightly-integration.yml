@@ -1,0 +1,38 @@
+name: Nightly Binance Integration
+
+on:
+  schedule:
+    - cron: "15 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  binance-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ secrets.BINANCE_API_KEY != '' && secrets.BINANCE_API_SECRET != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Binance integration smoke
+        env:
+          RUN_BINANCE_INTEGRATION: "true"
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          BINANCE_TESTNET: ${{ secrets.BINANCE_TESTNET || 'true' }}
+          READ_ONLY_MODE: "true"
+          LIVE_TRADING: "false"
+        run: pnpm run test:integration

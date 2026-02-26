@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "test": "vitest run",
     "test:integration": "RUN_BINANCE_INTEGRATION=true vitest run tests/binanceIntegration.test.ts",
@@ -18,7 +18,9 @@
     "backtest": "tsx src/apps/cli.ts backtest",
     "dev:live": "tsx src/apps/cli.ts live",
     "dev:worker": "tsx src/apps/worker.ts",
-    "dev:api": "tsx src/apps/http.ts"
+    "dev:api": "tsx src/apps/http.ts",
+    "preflight": "bash ./scripts/production-checklist.sh preflight",
+    "checklist:production": "bash ./scripts/production-checklist.sh print"
   },
   "dependencies": {
     "ccxt": "^4.5.20",

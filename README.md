@@ -115,15 +115,19 @@ Paper/backtest report:
 ## Tests and checks
 
 ```bash
-pnpm run typecheck
-pnpm run lint
-pnpm run test
+pnpm run preflight
 ```
 
 Optional live-adapter integration smoke (requires Binance credentials in env):
 
 ```bash
 pnpm run test:integration
+```
+
+Production rollout plan (exact ordered commands):
+
+```bash
+pnpm run checklist:production
 ```
 
 CI is configured in `.github/workflows/ci.yml` and runs the same checks on every pull request and push to `main`.
@@ -143,6 +147,7 @@ This avoids storing credentials in plain `.env` files inside container images/la
 
 - `docs/TRADING_LOGIC.md`
 - `docs/START_HERE.md`
+- `docs/PRODUCTION_CHECKLIST.md`
 
 ## Auth troubleshooting
 

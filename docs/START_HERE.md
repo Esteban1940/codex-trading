@@ -108,6 +108,18 @@ pnpm dev:live --profile production-conservative --cycles 0 --interval-ms 60000
 
 ## 9) Pre-live checklist
 
+Run the executable preflight gate first:
+
+```bash
+pnpm run preflight
+```
+
+For the full ordered rollout commands:
+
+```bash
+pnpm run checklist:production
+```
+
 1. At least 24h stable loop with real adapter in read-only mode (mainnet or testnet, matching your key origin).
 2. Kill switch tested (`KILL_SWITCH=true`).
 3. Risk liquidation path tested (`LIQUIDATE_ON_RISK=true`).

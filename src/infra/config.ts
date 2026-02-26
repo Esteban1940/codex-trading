@@ -173,6 +173,8 @@ const envSchema = z.object({
   WORKER_ALIGN_TO_FAST_CANDLE_CLOSE: z.string().default("true").transform((v) => v === "true"),
   WORKER_CANDLE_CLOSE_GRACE_MS: z.coerce.number().default(1500),
   WORKER_HEARTBEAT_FILE: z.string().default(path.join(".runtime", "worker-heartbeat.json")),
+  DAILY_REPORT_ENABLED: z.string().default("true").transform((v) => v === "true"),
+  DAILY_REPORT_HOUR_UTC: z.coerce.number().default(0),
   EXEC_QUOTE_MAX_AGE_MS: z.coerce.number().default(5000),
   EXEC_QUOTE_STALE_RETRY_COUNT: z.coerce.number().default(2),
   EXEC_QUOTE_STALE_RETRY_BACKOFF_MS: z.coerce.number().default(250),

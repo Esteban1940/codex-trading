@@ -14,7 +14,7 @@ import { SignalEngine } from "../core/signal/signalEngine.js";
 import { PortfolioAllocator } from "../core/portfolio/portfolioAllocator.js";
 import { InventoryManager } from "../core/inventory/inventoryManager.js";
 import { RiskEngine } from "../core/risk/riskEngine.js";
-import { BinanceSpotBot, type SupportedSymbol } from "../core/trading/binanceSpotBot.js";
+import { BinanceSpotBot, type BotReport, type SupportedSymbol } from "../core/trading/binanceSpotBot.js";
 
 /**
  * Keeps execution-store path next to the configured DB path so worker restarts
@@ -125,6 +125,31 @@ async function writeHeartbeat(cycle: number): Promise<void> {
     ),
     "utf-8"
   );
+}
+
+/**
+ * Returns canonical UTC day key (YYYY-MM-DD).
+ */
+function utcDayKey(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+/**
+ * Builds a compact daily risk summary payload for Telegram/webhook alerts.
+ */
+function buildDailyRiskReport(report: BotReport, cycle: number, dayKey: string): Record<string, unknown> {
+  return {
+    dayKey,
+    cycle,
+    finalUsdt: report.finalUsdt,
+    maxDrawdownPct: report.maxDrawdownPct,
+    totalTrades: report.totalTrades,
+    tradesBySymbol: report.tradesBySymbol,
+    winRate: report.winRate,
+    feesPaidUsdt: report.feesPaidUsdt,
+    timeInPositionPct: report.timeInPositionPct,
+    noTradeReasonCounts: report.noTradeReasonCounts
+  };
 }
 
 const bot = new BinanceSpotBot(
@@ -269,6 +294,7 @@ async function main(): Promise<void> {
   });
 
   let cycle = 0;
+  let lastDailyReportKey = "";
   while (config.WORKER_MAX_CYCLES === 0 || cycle < config.WORKER_MAX_CYCLES) {
     cycle += 1;
 
@@ -292,6 +318,18 @@ async function main(): Promise<void> {
       await sendAlert("no_trade_reason_spike", { ...alert });
     }
     await writeHeartbeat(cycle);
+
+    if (config.DAILY_REPORT_ENABLED) {
+      const nowTs = Date.now();
+      const dayKey = utcDayKey(nowTs);
+      const hourUtc = new Date(nowTs).getUTCHours();
+      if (dayKey !== lastDailyReportKey && hourUtc >= config.DAILY_REPORT_HOUR_UTC) {
+        const payload = buildDailyRiskReport(report, cycle, dayKey);
+        logger.info({ event: "daily_risk_report", ...payload });
+        await sendAlert("daily_risk_report", payload);
+        lastDailyReportKey = dayKey;
+      }
+    }
 
     // Keep loop pacing deterministic (fixed) or candle-close aligned.
     logger.info({ event: "worker_cycle_done", cycle, report });

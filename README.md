@@ -43,6 +43,7 @@ Required env values:
 - Quote freshness and retries are configurable (`EXEC_QUOTE_MAX_AGE_MS`, `EXEC_QUOTE_STALE_RETRY_COUNT`, `EXEC_QUOTE_STALE_RETRY_BACKOFF_MS`)
 - Worker can align loops to fast candle close (`WORKER_ALIGN_TO_FAST_CANDLE_CLOSE=true`, `WORKER_CANDLE_CLOSE_GRACE_MS=1500`) and when enabled it sleeps until next close window
 - No-trade reason spike monitor is configurable (`MONITOR_NOTRADE_WINDOW_CYCLES`, `MONITOR_NOTRADE_ALERT_THRESHOLD`, `MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES`)
+- Daily risk report alert is configurable (`DAILY_REPORT_ENABLED`, `DAILY_REPORT_HOUR_UTC`)
 - Telegram alerts (recommended): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (optional `TELEGRAM_THREAD_ID`)
 - Optional generic webhook fallback: `ALERT_WEBHOOK_URL`
 

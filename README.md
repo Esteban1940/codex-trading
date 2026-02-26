@@ -37,8 +37,9 @@ Required env values:
 - Ensure `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equity >= MIN_NOTIONAL_USDT` (for ~94 USDT, use at least `0.11` per symbol)
 - For strict live preflight on micro-capital, set `LIVE_EQUITY_REFERENCE_USDT` to current equity
 - Live conservative limits are validated at startup (`LIVE_REQUIRE_CONSERVATIVE_LIMITS=true`)
+- Market-shock circuit breaker is configurable (`RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT`)
 - Quote freshness and retries are configurable (`EXEC_QUOTE_MAX_AGE_MS`, `EXEC_QUOTE_STALE_RETRY_COUNT`, `EXEC_QUOTE_STALE_RETRY_BACKOFF_MS`)
-- Worker can align loops to fast candle close (`WORKER_ALIGN_TO_FAST_CANDLE_CLOSE=true`, `WORKER_CANDLE_CLOSE_GRACE_MS=1500`)
+- Worker can align loops to fast candle close (`WORKER_ALIGN_TO_FAST_CANDLE_CLOSE=true`, `WORKER_CANDLE_CLOSE_GRACE_MS=1500`) and when enabled it sleeps until next close window
 - Telegram alerts (recommended): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (optional `TELEGRAM_THREAD_ID`)
 - Optional generic webhook fallback: `ALERT_WEBHOOK_URL`
 
@@ -117,6 +118,8 @@ pnpm run test
 ```
 
 CI is configured in `.github/workflows/ci.yml` and runs the same checks on every pull request and push to `main`.
+
+Runtime metrics are exposed at `GET /status` (via `pnpm dev:api`).
 
 ## Docker secrets
 

@@ -4,6 +4,7 @@ import { logger } from "../infra/logger.js";
 import { sendAlert } from "../infra/alerts.js";
 import { assertConservativeLiveConfig, assertLiveMinNotionalFeasibility } from "../infra/liveSafety.js";
 import { createPersistence } from "../infra/db/factory.js";
+import { setMetric } from "../infra/metrics.js";
 import { sleep } from "../infra/retry.js";
 import { BinanceAdapter } from "../adapters/crypto/binanceAdapter.js";
 import { MockExchangeAdapter } from "../adapters/mock/mockExchangeAdapter.js";
@@ -73,12 +74,11 @@ const fastTimeframeMs = timeframeToMs(fastTimeframe);
 
 function computeSleepMs(nowTs: number): number {
   if (!config.WORKER_ALIGN_TO_FAST_CANDLE_CLOSE || !config.SIGNAL_EVAL_ON_FAST_CANDLE_CLOSE_ONLY) {
-    return config.WORKER_INTERVAL_MS;
+    return Math.max(250, config.WORKER_INTERVAL_MS);
   }
   const graceMs = Math.max(0, config.WORKER_CANDLE_CLOSE_GRACE_MS);
   const nextClose = Math.floor(nowTs / fastTimeframeMs) * fastTimeframeMs + fastTimeframeMs;
-  const aligned = Math.max(250, nextClose + graceMs - nowTs);
-  return Math.min(Math.max(250, config.WORKER_INTERVAL_MS), aligned);
+  return Math.max(250, nextClose + graceMs - nowTs);
 }
 
 const bot = new BinanceSpotBot(
@@ -124,7 +124,8 @@ const bot = new BinanceSpotBot(
     maxOpenPositions: config.MAX_OPEN_POSITIONS,
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
-    atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT
+    atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT,
+    marketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT
   }),
     {
       symbols: parseSymbols(config.SYMBOLS),
@@ -196,6 +197,7 @@ async function main(): Promise<void> {
     maxDailyLossUsdt: config.RISK_MAX_DAILY_LOSS_USDT,
     maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
     maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
+    riskMarketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT,
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     readOnlyMode: config.READ_ONLY_MODE,
@@ -217,7 +219,18 @@ async function main(): Promise<void> {
   while (config.WORKER_MAX_CYCLES === 0 || cycle < config.WORKER_MAX_CYCLES) {
     cycle += 1;
     await bot.runCycle();
-    logger.info({ event: "worker_cycle_done", cycle, report: bot.getReport() });
+    const report = bot.getReport();
+    setMetric("worker.cycle", cycle);
+    setMetric("worker.report.finalUsdt", report.finalUsdt);
+    setMetric("worker.report.maxDrawdownPct", report.maxDrawdownPct);
+    setMetric("worker.report.totalTrades", report.totalTrades);
+    setMetric("worker.report.feesPaidUsdt", report.feesPaidUsdt);
+    setMetric("worker.report.timeInPositionPct", report.timeInPositionPct);
+    setMetric("worker.notrade.btc.insufficient_score", report.noTradeReasonCounts["BTC/USDT"].insufficient_score);
+    setMetric("worker.notrade.btc.insufficient_edge", report.noTradeReasonCounts["BTC/USDT"].insufficient_edge);
+    setMetric("worker.notrade.eth.insufficient_score", report.noTradeReasonCounts["ETH/USDT"].insufficient_score);
+    setMetric("worker.notrade.eth.insufficient_edge", report.noTradeReasonCounts["ETH/USDT"].insufficient_edge);
+    logger.info({ event: "worker_cycle_done", cycle, report });
     const sleepMs = computeSleepMs(Date.now());
     logger.info({
       event: "worker_sleep_scheduled",

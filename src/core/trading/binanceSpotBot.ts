@@ -416,7 +416,8 @@ export class BinanceSpotBot {
       dayStartEquityUsdt: this.state.dayStartEquityUsdt,
       peakEquityUsdt: this.state.peakEquityUsdt,
       tradesToday: this.state.tradesToday,
-      atrPct: Math.max(signals["BTC/USDT"].features.atrPct, signals["ETH/USDT"].features.atrPct)
+      atrPct: Math.max(signals["BTC/USDT"].features.atrPct, signals["ETH/USDT"].features.atrPct),
+      marketShockPct: this.computeFastMarketShockPct([histories[0] ?? [], histories[2] ?? []])
     });
     const allowEntries = risk.allowTrading;
 
@@ -1447,5 +1448,22 @@ export class BinanceSpotBot {
       computedMaxSymbolNotionalUsdt: maxSymbolNotional,
       recommendation: "Increase ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL or equity, or reduce MIN_NOTIONAL_USDT."
     });
+  }
+
+  /**
+   * Approximates intrabar market shock using the most recent fast-timeframe close-to-close move.
+   * We use the max absolute % move across BTC/ETH as conservative portfolio risk input.
+   */
+  private computeFastMarketShockPct(histories: Array<Array<{ close: number }>>): number {
+    let maxShock = 0;
+    for (const candles of histories) {
+      if (candles.length < 2) continue;
+      const prev = Number(candles[candles.length - 2]?.close ?? 0);
+      const last = Number(candles[candles.length - 1]?.close ?? 0);
+      if (prev <= 0 || !Number.isFinite(prev) || !Number.isFinite(last)) continue;
+      const shockPct = (Math.abs(last - prev) / prev) * 100;
+      if (shockPct > maxShock) maxShock = shockPct;
+    }
+    return maxShock;
   }
 }

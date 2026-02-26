@@ -139,7 +139,8 @@ function buildRiskEngine(overrides?: RuntimeOverrides): RiskEngine {
     maxOpenPositions: config.MAX_OPEN_POSITIONS,
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
-    atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT
+    atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT,
+    marketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT
   });
 }
 
@@ -217,13 +218,12 @@ async function runLoop(bot: BinanceSpotBot, cycles: number, intervalMs: number):
     logger.info({ event: "cycle_done", cycle: i, report: bot.getReport() });
     if (cycles !== 0 && i >= cycles) break;
     if (!align) {
-      await sleep(intervalMs);
+      await sleep(Math.max(250, intervalMs));
       continue;
     }
     const nowTs = Date.now();
     const nextClose = Math.floor(nowTs / fastTimeframeMs) * fastTimeframeMs + fastTimeframeMs;
-    const alignedMs = Math.max(250, nextClose + graceMs - nowTs);
-    await sleep(Math.min(Math.max(250, intervalMs), alignedMs));
+    await sleep(Math.max(250, nextClose + graceMs - nowTs));
   }
 }
 
@@ -300,6 +300,7 @@ function logEffectiveRuntimeConfig(
     maxDailyLossUsdt: config.RISK_MAX_DAILY_LOSS_USDT,
     maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
     maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
+    riskMarketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT,
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     readOnlyMode: paperSimRealData ? false : config.READ_ONLY_MODE,

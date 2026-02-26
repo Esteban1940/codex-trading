@@ -12,6 +12,7 @@ export interface RiskLimits {
   maxNotionalPerSymbolUsd: number;
   maxNotionalPerMarketUsd: number;
   atrCircuitBreakerPct: number;
+  marketShockCircuitBreakerPct: number;
 }
 
 export interface PortfolioRiskState {
@@ -20,6 +21,7 @@ export interface PortfolioRiskState {
   peakEquityUsdt: number;
   tradesToday: number;
   atrPct: number;
+  marketShockPct?: number;
 }
 
 export interface OrderRiskOptions {
@@ -66,6 +68,11 @@ export class RiskEngine {
     if (state.atrPct >= this.limits.atrCircuitBreakerPct) {
       reasons.push("ATR circuit breaker triggered");
       liquidationTriggers.push("ATR circuit breaker triggered");
+    }
+    const marketShockPct = Math.max(0, state.marketShockPct ?? 0);
+    if (marketShockPct >= this.limits.marketShockCircuitBreakerPct) {
+      reasons.push("Market shock circuit breaker triggered");
+      liquidationTriggers.push("Market shock circuit breaker triggered");
     }
 
     const forceLiquidate = this.limits.liquidateOnRisk && liquidationTriggers.length > 0;

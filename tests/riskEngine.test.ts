@@ -13,7 +13,8 @@ describe("RiskEngine portfolio triggers", () => {
     maxOpenPositions: 5,
     maxNotionalPerSymbolUsd: 1000,
     maxNotionalPerMarketUsd: 2000,
-    atrCircuitBreakerPct: 8
+    atrCircuitBreakerPct: 8,
+    marketShockCircuitBreakerPct: 4
   };
 
   it("forces liquidation on daily loss breach", () => {
@@ -73,6 +74,22 @@ describe("RiskEngine portfolio triggers", () => {
     expect(result.allowTrading).toBe(false);
     expect(result.forceLiquidate).toBe(false);
     expect(result.reasons.join(" ")).toMatch(/max trades/i);
+  });
+
+  it("forces liquidation on market shock breaker", () => {
+    const engine = new RiskEngine(base);
+    const result = engine.evaluatePortfolio({
+      equityUsdt: 1000,
+      dayStartEquityUsdt: 1000,
+      peakEquityUsdt: 1000,
+      tradesToday: 0,
+      atrPct: 1,
+      marketShockPct: 5
+    });
+
+    expect(result.allowTrading).toBe(false);
+    expect(result.forceLiquidate).toBe(true);
+    expect(result.reasons.join(" ")).toMatch(/market shock/i);
   });
 
   it("allows risk-reducing sell even when kill switch and limits are breached", () => {

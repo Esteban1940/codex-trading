@@ -1,6 +1,10 @@
 import { config } from "./config.js";
 import { logger } from "./logger.js";
 
+/**
+ * Sends a high-priority runtime alert.
+ * Tries Telegram first; if Telegram is not configured or fails, falls back to generic webhook.
+ */
 export async function sendAlert(event: string, payload: Record<string, unknown>): Promise<void> {
   const telegramSent = await sendTelegramAlert(event, payload);
   if (telegramSent) return;
@@ -44,6 +48,9 @@ export async function sendAlert(event: string, payload: Record<string, unknown>)
   }
 }
 
+/**
+ * Serializes payloads for alert messages and caps size to avoid API rejections.
+ */
 function toCompactJson(value: unknown): string {
   try {
     const serialized = JSON.stringify(value);
@@ -53,10 +60,17 @@ function toCompactJson(value: unknown): string {
   }
 }
 
+/**
+ * Escapes MarkdownV2 special chars so Telegram renders alert content safely.
+ */
 function escapeTelegramMarkdown(value: string): string {
   return value.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
 }
 
+/**
+ * Sends a Telegram message to the configured chat/topic.
+ * Returns true only when delivery succeeds.
+ */
 async function sendTelegramAlert(event: string, payload: Record<string, unknown>): Promise<boolean> {
   const botToken = config.TELEGRAM_BOT_TOKEN.trim();
   const chatId = config.TELEGRAM_CHAT_ID.trim();

@@ -2,10 +2,16 @@ import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 
+/**
+ * Loads a secret value from a file path (used by *_FILE env vars).
+ */
 function readSecretFromFile(pathValue: string): string {
   return readFileSync(pathValue, "utf8").trim();
 }
 
+/**
+ * Replaces plain env values with file-backed secrets when *_FILE vars are provided.
+ */
 function applyFileBackedSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out = { ...env };
   const fileBackedKeys: Array<{ valueKey: keyof NodeJS.ProcessEnv; fileKey: keyof NodeJS.ProcessEnv }> = [

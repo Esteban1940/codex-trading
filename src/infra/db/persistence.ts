@@ -24,6 +24,9 @@ class FilePersistence implements Persistence {
     private readonly statePath: string
   ) {}
 
+  /**
+   * Appends immutable event records into a local JSONL ledger.
+   */
   async insertEvent(type: string, payload: unknown): Promise<void> {
     const record = {
       ts: Date.now(),
@@ -36,12 +39,18 @@ class FilePersistence implements Persistence {
     });
   }
 
+  /**
+   * Reads a state key from the local state snapshot file.
+   */
   async getState<T>(key: string): Promise<T | undefined> {
     const map = await this.readStateMap();
     const record = map[key];
     return (record?.value as T | undefined) ?? undefined;
   }
 
+  /**
+   * Upserts a state key atomically (temp file + rename).
+   */
   async putState<T>(key: string, value: T): Promise<void> {
     await this.enqueueWrite(async () => {
       const current = await this.readStateMap();
@@ -56,6 +65,9 @@ class FilePersistence implements Persistence {
     });
   }
 
+  /**
+   * Loads the current state map from disk; returns empty map on missing/corrupt file.
+   */
   private async readStateMap(): Promise<StoredStateMap> {
     try {
       const raw = await fs.readFile(this.statePath, "utf8");
@@ -69,10 +81,16 @@ class FilePersistence implements Persistence {
     }
   }
 
+  /**
+   * Ensures parent directory exists before writing event/state files.
+   */
   private async ensureParentDir(filePath: string): Promise<void> {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
   }
 
+  /**
+   * Serializes writes to avoid race conditions between concurrent cycles.
+   */
   private async enqueueWrite(task: () => Promise<void>): Promise<void> {
     const next = this.writeQueue.then(task, task);
     this.writeQueue = next.catch(() => undefined);
@@ -89,14 +107,23 @@ export class SqlitePersistence implements Persistence {
     this.delegate = new FilePersistence(`${stem}.events.jsonl`, `${stem}.state.json`);
   }
 
+  /**
+   * Delegates event append to file-backed sqlite-compatible storage.
+   */
   insertEvent(type: string, payload: unknown): Promise<void> {
     return this.delegate.insertEvent(type, payload);
   }
 
+  /**
+   * Delegates state read to file-backed sqlite-compatible storage.
+   */
   getState<T>(key: string): Promise<T | undefined> {
     return this.delegate.getState<T>(key);
   }
 
+  /**
+   * Delegates state write to file-backed sqlite-compatible storage.
+   */
   putState<T>(key: string, value: T): Promise<void> {
     return this.delegate.putState(key, value);
   }
@@ -115,6 +142,9 @@ export class PostgresPersistence implements Persistence {
     });
   }
 
+  /**
+   * Inserts raw event payload in PostgreSQL JSONB for audit/analytics.
+   */
   async insertEvent(type: string, payload: unknown): Promise<void> {
     await this.ensureInit();
     await this.pool.query("INSERT INTO events(ts, type, payload) VALUES($1, $2, $3::jsonb)", [
@@ -124,6 +154,9 @@ export class PostgresPersistence implements Persistence {
     ]);
   }
 
+  /**
+   * Reads one state key from PostgreSQL state table.
+   */
   async getState<T>(key: string): Promise<T | undefined> {
     await this.ensureInit();
     const result = await this.pool.query<{ value: T }>(
@@ -133,6 +166,9 @@ export class PostgresPersistence implements Persistence {
     return result.rows[0]?.value;
   }
 
+  /**
+   * Upserts state key in PostgreSQL.
+   */
   async putState<T>(key: string, value: T): Promise<void> {
     await this.ensureInit();
     await this.pool.query(
@@ -146,6 +182,9 @@ export class PostgresPersistence implements Persistence {
     );
   }
 
+  /**
+   * Creates required tables/indexes on first use.
+   */
   private async ensureInit(): Promise<void> {
     if (!this.initPromise) {
       this.initPromise = (async () => {
@@ -165,16 +204,25 @@ export class PostgresPersistence implements Persistence {
 }
 
 export class NoopPersistence implements Persistence {
+  /**
+   * No-op implementation for dry runs or tests.
+   */
   async insertEvent(type: string, payload: unknown): Promise<void> {
     void type;
     void payload;
   }
 
+  /**
+   * Always returns undefined (no persisted state).
+   */
   async getState<T>(key: string): Promise<T | undefined> {
     void key;
     return undefined;
   }
 
+  /**
+   * No-op state write.
+   */
   async putState<T>(key: string, value: T): Promise<void> {
     void key;
     void value;

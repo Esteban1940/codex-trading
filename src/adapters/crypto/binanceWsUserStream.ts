@@ -21,6 +21,9 @@ export class BinanceWsUserStream {
     }
   ) {}
 
+  /**
+   * Bootstraps listenKey + websocket subscription + keepalive loop.
+   */
   async start(): Promise<void> {
     const WsCtor = globalThis.WebSocket;
     if (!WsCtor) {
@@ -44,6 +47,9 @@ export class BinanceWsUserStream {
     }
   }
 
+  /**
+   * Stops websocket session and clears all timers.
+   */
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -56,6 +62,9 @@ export class BinanceWsUserStream {
     }
   }
 
+  /**
+   * Opens websocket using current listenKey and attaches event handlers.
+   */
   private connect(WsCtor: typeof WebSocket): void {
     if (!this.listenKey || this.stopped) return;
     const base = this.cfg.wsBaseUrl.replace(/\/+$/, "");
@@ -82,6 +91,9 @@ export class BinanceWsUserStream {
     };
   }
 
+  /**
+   * Keeps listenKey alive to avoid Binance user-stream expiration.
+   */
   private startKeepaliveLoop(): void {
     if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
     this.keepaliveTimer = setInterval(() => {
@@ -89,6 +101,9 @@ export class BinanceWsUserStream {
     }, Math.max(60_000, this.cfg.keepaliveMs));
   }
 
+  /**
+   * Sends periodic keepalive request for the active listenKey.
+   */
   private async keepAlive(): Promise<void> {
     if (!this.listenKey || this.stopped) return;
     await fetch(`${this.cfg.restBaseUrl.replace(/\/+$/, "")}/api/v3/userDataStream?listenKey=${encodeURIComponent(this.listenKey)}`, {
@@ -99,6 +114,9 @@ export class BinanceWsUserStream {
     });
   }
 
+  /**
+   * Requests a fresh listenKey from Binance REST API.
+   */
   private async createListenKey(): Promise<string> {
     const response = await fetch(`${this.cfg.restBaseUrl.replace(/\/+$/, "")}/api/v3/userDataStream`, {
       method: "POST",
@@ -117,6 +135,9 @@ export class BinanceWsUserStream {
     return key;
   }
 
+  /**
+   * Processes user data events and emits concise logs for order/account changes.
+   */
   private handleUserEvent(raw: string): void {
     try {
       const payload = JSON.parse(raw) as Record<string, unknown>;
@@ -145,6 +166,9 @@ export class BinanceWsUserStream {
     }
   }
 
+  /**
+   * Recreates listenKey + websocket after disconnect or start failure.
+   */
   private scheduleReconnect(WsCtor: typeof WebSocket): void {
     if (this.stopped || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(async () => {

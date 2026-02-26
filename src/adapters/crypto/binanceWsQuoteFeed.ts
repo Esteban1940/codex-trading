@@ -20,6 +20,9 @@ interface QuoteSnapshot {
   ts: number;
 }
 
+/**
+ * Maps Binance raw market symbol to the internal symbol format.
+ */
 function toSymbol(pair: string): SupportedSymbol | undefined {
   const normalized = pair.toUpperCase();
   if (normalized === "BTCUSDT") return "BTC/USDT";
@@ -27,6 +30,9 @@ function toSymbol(pair: string): SupportedSymbol | undefined {
   return undefined;
 }
 
+/**
+ * Parses combined-stream WebSocket payloads and returns undefined on malformed data.
+ */
 function parsePayload(raw: string): CombinedStreamPayload | undefined {
   try {
     return JSON.parse(raw) as CombinedStreamPayload;
@@ -48,6 +54,9 @@ export class BinanceWsQuoteFeed {
     }
   ) {}
 
+  /**
+   * Starts bookTicker stream for BTC/USDT and ETH/USDT.
+   */
   start(): void {
     const WsCtor = globalThis.WebSocket;
     if (!WsCtor) {
@@ -64,6 +73,9 @@ export class BinanceWsQuoteFeed {
     this.connect(wsUrl, WsCtor);
   }
 
+  /**
+   * Stops the stream and cancels reconnect timers.
+   */
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -74,10 +86,16 @@ export class BinanceWsQuoteFeed {
     }
   }
 
+  /**
+   * Returns latest in-memory quote snapshot for a symbol.
+   */
   getQuote(symbol: SupportedSymbol): QuoteSnapshot | undefined {
     return this.quotes.get(symbol);
   }
 
+  /**
+   * Opens socket handlers and continuously refreshes in-memory quotes.
+   */
   private connect(url: string, WsCtor: typeof WebSocket): void {
     if (this.stopped) return;
 
@@ -128,6 +146,9 @@ export class BinanceWsQuoteFeed {
     };
   }
 
+  /**
+   * Schedules reconnection after transient disconnects/errors.
+   */
   private scheduleReconnect(url: string, WsCtor: typeof WebSocket): void {
     if (this.stopped || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {

@@ -1,9 +1,15 @@
 import type { AppConfig } from "./config.js";
 
+/**
+ * Normalizes a validation error row with expected threshold for clearer startup failures.
+ */
 function buildViolation(label: string, value: number | string | boolean, expected: string): string {
   return `${label}=${String(value)} (expected ${expected})`;
 }
 
+/**
+ * Enforces conservative live limits when LIVE_TRADING and LIVE_REQUIRE_CONSERVATIVE_LIMITS are enabled.
+ */
 export function assertConservativeLiveConfig(cfg: AppConfig): void {
   if (!cfg.LIVE_TRADING || !cfg.LIVE_REQUIRE_CONSERVATIVE_LIMITS) return;
 
@@ -90,6 +96,9 @@ export function assertConservativeLiveConfig(cfg: AppConfig): void {
   }
 }
 
+/**
+ * Prevents live startup when configured per-symbol exposure cannot reach exchange min-notional.
+ */
 export function assertLiveMinNotionalFeasibility(cfg: AppConfig, equityUsdt?: number): void {
   if (!cfg.LIVE_TRADING) return;
 

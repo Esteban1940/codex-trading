@@ -118,20 +118,30 @@ Production rollout checklist (recommended order)
    pnpm run typecheck
    pnpm run lint
    pnpm run test
+   pnpm run test:coverage
    RUN_BINANCE_INTEGRATION=true pnpm run test:integration
 
-2) Exchange read-only smoke (no live orders)
+2) Exchange read-only smoke (no live orders, validate auth/path)
    # .env => LIVE_TRADING=false, READ_ONLY_MODE=true, BINANCE_TESTNET=false
-   pnpm dev:paper --real-adapter --profile production-conservative --cycles 30 --interval-ms 60000
+   pnpm dev:paper --real-adapter --profile production-conservative --cycles 10 --interval-ms 60000
+   # verify: no -2015 auth errors, no order placement events
 
-3) Paper simulation with real exchange data
-   pnpm dev:paper --paper-sim-real-data --profile paper-validation --cycles 120 --interval-ms 60000
+3) Paper simulation with real exchange data (execution logic dry-run)
+   pnpm dev:paper --paper-sim-real-data --profile paper-validation --cycles 60 --interval-ms 60000
+   # verify: cycle_done logs increase, no_trade_reason counters and fees are present
 
-4) Live canary (micro-risk)
+4) Start worker + API and verify runtime status endpoint
+   pnpm dev:worker
+   # in a second shell:
+   pnpm dev:api
+   pnpm run checklist:verify-api
+
+5) Live canary (micro-risk)
    # .env => LIVE_TRADING=true, READ_ONLY_MODE=false, BINANCE_TESTNET=false
-   pnpm dev:live --profile production-conservative --cycles 30 --interval-ms 60000
+   pnpm dev:live --profile production-conservative --cycles 10 --interval-ms 60000
+   # verify: totalTrades > 0 (or explicit no-trade reasons), no risk breaker spam
 
-5) Live continuous
+6) Live continuous
    pnpm dev:live --profile production-conservative --cycles 0 --interval-ms 60000
 PLAN
 }
@@ -153,6 +163,7 @@ run_preflight() {
   run_cmd pnpm run typecheck
   run_cmd pnpm run lint
   run_cmd pnpm run test
+  run_cmd pnpm run test:coverage
 
   if [[ "${RUN_BINANCE_INTEGRATION:-false}" == "true" ]]; then
     run_cmd pnpm run test:integration
@@ -163,15 +174,76 @@ run_preflight() {
   echo "[ok] preflight gate passed."
 }
 
+run_preflight_strict() {
+  RUN_BINANCE_INTEGRATION=true run_preflight
+}
+
+verify_http_status() {
+  local base_url="${1:-http://127.0.0.1:3000}"
+  local max_heartbeat_age_ms="${2:-180000}"
+
+  required_bin curl
+  required_bin node
+
+  echo "[check] GET ${base_url}/health"
+  local health
+  health="$(curl -fsS "${base_url}/health")"
+  echo "[ok] /health => ${health}"
+
+  echo "[check] GET ${base_url}/status"
+  local status
+  status="$(curl -fsS "${base_url}/status")"
+
+  echo "$status" | node -e '
+    const fs = require("node:fs");
+    const raw = fs.readFileSync(0, "utf8");
+    const payload = JSON.parse(raw);
+    const hasUptime = Number.isFinite(payload?.uptimeSec);
+    const hasMetrics = payload && typeof payload.metrics === "object";
+    if (!hasUptime || !hasMetrics) {
+      console.error("[error] /status payload missing uptimeSec or metrics");
+      process.exit(1);
+    }
+    console.log(`[ok] /status uptimeSec=${payload.uptimeSec}`);
+  '
+
+  echo "$status" | node -e "
+    const fs = require('node:fs');
+    const raw = fs.readFileSync(0, 'utf8');
+    const payload = JSON.parse(raw);
+    const heartbeatAgeMs = payload?.heartbeatAgeMs;
+    const maxAge = Number(${max_heartbeat_age_ms});
+    if (heartbeatAgeMs === null) {
+      console.log('[warn] /status heartbeatAgeMs=null (worker heartbeat file not found yet)');
+      process.exit(0);
+    }
+    if (!Number.isFinite(heartbeatAgeMs) || heartbeatAgeMs < 0) {
+      console.error('[error] /status heartbeatAgeMs invalid');
+      process.exit(1);
+    }
+    if (heartbeatAgeMs > maxAge) {
+      console.error('[error] worker heartbeat is stale:', heartbeatAgeMs, 'ms >', maxAge, 'ms');
+      process.exit(1);
+    }
+    console.log('[ok] heartbeatAgeMs=', heartbeatAgeMs, 'ms');
+  "
+}
+
 case "$mode" in
   preflight)
     run_preflight
+    ;;
+  preflight-strict)
+    run_preflight_strict
+    ;;
+  verify-api)
+    verify_http_status "${2:-http://127.0.0.1:3000}" "${3:-180000}"
     ;;
   print)
     print_rollout
     ;;
   *)
-    echo "Usage: $0 [preflight|print]" >&2
+    echo "Usage: $0 [preflight|preflight-strict|verify-api|print]" >&2
     exit 1
     ;;
 esac

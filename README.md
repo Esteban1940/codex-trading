@@ -117,10 +117,12 @@ Paper/backtest report:
 
 ```bash
 pnpm run preflight
+pnpm run preflight:strict
 pnpm run test:coverage
 ```
 
 `preflight` accepts either `.env` or process env variables. If `BINANCE_*_FILE` is set, it validates that secret files are readable.
+`preflight:strict` is the release gate (`typecheck + lint + test + coverage + integration`).
 
 Optional live-adapter integration smoke (requires Binance credentials in env):
 
@@ -135,6 +137,12 @@ Production rollout plan (exact ordered commands):
 
 ```bash
 pnpm run checklist:production
+```
+
+Runtime API/worker verification helper:
+
+```bash
+pnpm run checklist:verify-api
 ```
 
 CI is configured in `.github/workflows/ci.yml` and runs the same checks on every pull request and push to `main`.

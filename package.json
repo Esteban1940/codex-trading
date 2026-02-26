@@ -21,7 +21,9 @@
     "dev:worker": "tsx src/apps/worker.ts",
     "dev:api": "tsx src/apps/http.ts",
     "preflight": "bash ./scripts/production-checklist.sh preflight",
-    "checklist:production": "bash ./scripts/production-checklist.sh print"
+    "preflight:strict": "bash ./scripts/production-checklist.sh preflight-strict",
+    "checklist:production": "bash ./scripts/production-checklist.sh print",
+    "checklist:verify-api": "bash ./scripts/production-checklist.sh verify-api"
   },
   "dependencies": {
     "ccxt": "^4.5.20",

@@ -38,6 +38,8 @@ Required env values:
 - For strict live preflight on micro-capital, set `LIVE_EQUITY_REFERENCE_USDT` to current equity
 - Live conservative limits are validated at startup (`LIVE_REQUIRE_CONSERVATIVE_LIMITS=true`)
 - Market-shock circuit breaker is configurable (`RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT`)
+- Spread circuit breaker is configurable (`RISK_SPREAD_CIRCUIT_BREAKER_PCT`)
+- Post-breaker entry cooldown is configurable (`RISK_CIRCUIT_BREAKER_COOLDOWN_MINUTES`)
 - Quote freshness and retries are configurable (`EXEC_QUOTE_MAX_AGE_MS`, `EXEC_QUOTE_STALE_RETRY_COUNT`, `EXEC_QUOTE_STALE_RETRY_BACKOFF_MS`)
 - Worker can align loops to fast candle close (`WORKER_ALIGN_TO_FAST_CANDLE_CLOSE=true`, `WORKER_CANDLE_CLOSE_GRACE_MS=1500`) and when enabled it sleeps until next close window
 - No-trade reason spike monitor is configurable (`MONITOR_NOTRADE_WINDOW_CYCLES`, `MONITOR_NOTRADE_ALERT_THRESHOLD`, `MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES`)

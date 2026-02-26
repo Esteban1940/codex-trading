@@ -140,7 +140,8 @@ function buildRiskEngine(overrides?: RuntimeOverrides): RiskEngine {
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT,
-    marketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT
+    marketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT,
+    spreadCircuitBreakerPct: config.RISK_SPREAD_CIRCUIT_BREAKER_PCT
   });
 }
 
@@ -199,7 +200,8 @@ function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; ove
       quoteMaxAgeMs: config.EXEC_QUOTE_MAX_AGE_MS,
       quoteStaleRetryCount: config.EXEC_QUOTE_STALE_RETRY_COUNT,
       quoteStaleRetryBackoffMs: config.EXEC_QUOTE_STALE_RETRY_BACKOFF_MS,
-      riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10)
+      riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10),
+      riskCircuitBreakerCooldownMinutes: config.RISK_CIRCUIT_BREAKER_COOLDOWN_MINUTES
     },
     persistence
   );
@@ -301,6 +303,8 @@ function logEffectiveRuntimeConfig(
     maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
     maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
     riskMarketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT,
+    riskSpreadCircuitBreakerPct: config.RISK_SPREAD_CIRCUIT_BREAKER_PCT,
+    riskCircuitBreakerCooldownMinutes: config.RISK_CIRCUIT_BREAKER_COOLDOWN_MINUTES,
     monitorNoTradeWindowCycles: config.MONITOR_NOTRADE_WINDOW_CYCLES,
     monitorNoTradeAlertThreshold: config.MONITOR_NOTRADE_ALERT_THRESHOLD,
     monitorNoTradeAlertCooldownCycles: config.MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES,

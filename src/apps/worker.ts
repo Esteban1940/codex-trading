@@ -131,7 +131,8 @@ const bot = new BinanceSpotBot(
     maxNotionalPerSymbolUsd: config.MAX_NOTIONAL_PER_SYMBOL_USD,
     maxNotionalPerMarketUsd: config.MAX_NOTIONAL_PER_MARKET_USD,
     atrCircuitBreakerPct: config.RISK_ATR_CIRCUIT_BREAKER_PCT,
-    marketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT
+    marketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT,
+    spreadCircuitBreakerPct: config.RISK_SPREAD_CIRCUIT_BREAKER_PCT
   }),
     {
       symbols: parseSymbols(config.SYMBOLS),
@@ -157,15 +158,16 @@ const bot = new BinanceSpotBot(
     starvationFloorRegimeEntryMin: config.STARVATION_FLOOR_REGIME_ENTRY_MIN,
     entryOrderType: config.EXEC_ENTRY_ORDER_TYPE,
     entryLimitOffsetBps: config.EXEC_ENTRY_LIMIT_OFFSET_BPS,
-      entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
-      exitOrderType: config.EXEC_EXIT_ORDER_TYPE,
-      liveTrading: config.LIVE_TRADING,
-      readOnlyMode: config.READ_ONLY_MODE,
-      executionStorePath,
-      quoteMaxAgeMs: config.EXEC_QUOTE_MAX_AGE_MS,
-      quoteStaleRetryCount: config.EXEC_QUOTE_STALE_RETRY_COUNT,
-      quoteStaleRetryBackoffMs: config.EXEC_QUOTE_STALE_RETRY_BACKOFF_MS,
-      riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10)
+    entryLimitTimeoutMs: config.EXEC_ENTRY_LIMIT_TIMEOUT_MS,
+    exitOrderType: config.EXEC_EXIT_ORDER_TYPE,
+    liveTrading: config.LIVE_TRADING,
+    readOnlyMode: config.READ_ONLY_MODE,
+    executionStorePath,
+    quoteMaxAgeMs: config.EXEC_QUOTE_MAX_AGE_MS,
+    quoteStaleRetryCount: config.EXEC_QUOTE_STALE_RETRY_COUNT,
+    quoteStaleRetryBackoffMs: config.EXEC_QUOTE_STALE_RETRY_BACKOFF_MS,
+    riskOrderSlippageStressBps: Math.max(config.DEFAULT_SLIPPAGE_BPS, 10),
+    riskCircuitBreakerCooldownMinutes: config.RISK_CIRCUIT_BREAKER_COOLDOWN_MINUTES
     },
     persistence
   );
@@ -204,6 +206,8 @@ async function main(): Promise<void> {
     maxDailyLossPct: config.RISK_MAX_DAILY_LOSS_PCT,
     maxDrawdownPct: config.RISK_MAX_DRAWDOWN_PCT,
     riskMarketShockCircuitBreakerPct: config.RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT,
+    riskSpreadCircuitBreakerPct: config.RISK_SPREAD_CIRCUIT_BREAKER_PCT,
+    riskCircuitBreakerCooldownMinutes: config.RISK_CIRCUIT_BREAKER_COOLDOWN_MINUTES,
     monitorNoTradeWindowCycles: config.MONITOR_NOTRADE_WINDOW_CYCLES,
     monitorNoTradeAlertThreshold: config.MONITOR_NOTRADE_ALERT_THRESHOLD,
     monitorNoTradeAlertCooldownCycles: config.MONITOR_NOTRADE_ALERT_COOLDOWN_CYCLES,

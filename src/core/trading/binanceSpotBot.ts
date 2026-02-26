@@ -45,6 +45,7 @@ interface BotConfig {
   quoteStaleRetryCount?: number;
   quoteStaleRetryBackoffMs?: number;
   riskOrderSlippageStressBps?: number;
+  riskCircuitBreakerCooldownMinutes?: number;
   executionStorePath?: string;
   runId?: string;
   runtimeStateKey?: string;
@@ -97,6 +98,7 @@ interface RuntimeState {
     regimeEntryMin: number;
   };
   noTradeReasonCounts: Record<SupportedSymbol, NoTradeReasonCounts>;
+  riskCooldownUntilTs: number;
 }
 
 interface QuoteSnapshot {
@@ -283,7 +285,8 @@ export class BinanceSpotBot {
       noTradeReasonCounts: {
         "BTC/USDT": emptyNoTradeReasonCounts(),
         "ETH/USDT": emptyNoTradeReasonCounts()
-      }
+      },
+      riskCooldownUntilTs: 0
     };
   }
 
@@ -417,9 +420,22 @@ export class BinanceSpotBot {
       peakEquityUsdt: this.state.peakEquityUsdt,
       tradesToday: this.state.tradesToday,
       atrPct: Math.max(signals["BTC/USDT"].features.atrPct, signals["ETH/USDT"].features.atrPct),
-      marketShockPct: this.computeFastMarketShockPct([histories[0] ?? [], histories[2] ?? []])
+      marketShockPct: this.computeFastMarketShockPct([histories[0] ?? [], histories[2] ?? []]),
+      spreadPct: this.computeSpreadPct(quotesBefore)
     });
-    const allowEntries = risk.allowTrading;
+    let allowEntries = risk.allowTrading;
+    const riskReasons = [...risk.reasons];
+
+    if (risk.forceLiquidate) {
+      this.state.riskCooldownUntilTs = Math.max(
+        this.state.riskCooldownUntilTs,
+        now + this.riskCooldownMs()
+      );
+    }
+    if (now < this.state.riskCooldownUntilTs) {
+      allowEntries = false;
+      riskReasons.push("Risk cooldown active");
+    }
 
     const currentWeights = this.currentWeights(holdingsBefore, quotesBefore, equityBefore);
     const minHoldProtected = this.getMinHoldProtectedSymbols(now, currentWeights);
@@ -459,7 +475,7 @@ export class BinanceSpotBot {
     let entryFilledThisCycle = false;
 
     if (risk.forceLiquidate) {
-      const riskLiquidationPayload = { event: "risk_liquidation", ...logContext, reasons: risk.reasons };
+      const riskLiquidationPayload = { event: "risk_liquidation", ...logContext, reasons: riskReasons };
       logger.warn(riskLiquidationPayload);
       await this.recordEvent("risk_liquidation", riskLiquidationPayload);
       await sendAlert("risk_liquidation", riskLiquidationPayload);
@@ -579,7 +595,7 @@ export class BinanceSpotBot {
         const riskBlockPayload = {
           event: "risk_block_entries_only",
           ...logContext,
-          reasons: risk.reasons,
+          reasons: riskReasons,
           note: "entries blocked, exits/reduction still allowed"
         };
         logger.warn(riskBlockPayload);
@@ -1465,5 +1481,28 @@ export class BinanceSpotBot {
       if (shockPct > maxShock) maxShock = shockPct;
     }
     return maxShock;
+  }
+
+  /**
+   * Returns current max spread (%) across tracked symbols.
+   */
+  private computeSpreadPct(quotes: Record<SupportedSymbol, QuoteSnapshot>): number {
+    let maxSpreadPct = 0;
+    for (const symbol of ["BTC/USDT", "ETH/USDT"] as const) {
+      const bid = quotes[symbol].bid;
+      const ask = quotes[symbol].ask;
+      const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;
+      if (mid <= 0) continue;
+      const spreadPct = ((ask - bid) / mid) * 100;
+      if (spreadPct > maxSpreadPct) maxSpreadPct = spreadPct;
+    }
+    return maxSpreadPct;
+  }
+
+  /**
+   * Cooldown window after circuit breaker events before allowing new entries.
+   */
+  private riskCooldownMs(): number {
+    return Math.max(0, this.cfg.riskCircuitBreakerCooldownMinutes ?? 15) * 60_000;
   }
 }

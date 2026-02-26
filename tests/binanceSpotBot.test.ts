@@ -192,7 +192,8 @@ function createBot(params: {
       maxNotionalPerSymbolUsd: 1_000_000,
       maxNotionalPerMarketUsd: 1_000_000,
       atrCircuitBreakerPct: 100,
-      marketShockCircuitBreakerPct: 100
+      marketShockCircuitBreakerPct: 100,
+      spreadCircuitBreakerPct: 100
     }),
     {
       symbols: ["BTC/USDT", "ETH/USDT"],

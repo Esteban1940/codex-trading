@@ -46,6 +46,8 @@ const envSchema = z.object({
   RISK_MAX_TRADES_PER_DAY: z.coerce.number().default(20),
   RISK_ATR_CIRCUIT_BREAKER_PCT: z.coerce.number().default(8),
   RISK_MARKET_SHOCK_CIRCUIT_BREAKER_PCT: z.coerce.number().default(4),
+  RISK_SPREAD_CIRCUIT_BREAKER_PCT: z.coerce.number().default(0.4),
+  RISK_CIRCUIT_BREAKER_COOLDOWN_MINUTES: z.coerce.number().default(15),
   LIVE_REQUIRE_CONSERVATIVE_LIMITS: z.string().default("true").transform((v) => v === "true"),
   LIVE_MAX_EXPOSURE_TOTAL_HARD: z.coerce.number().default(0.35),
   LIVE_MAX_EXPOSURE_PER_SYMBOL_HARD: z.coerce.number().default(0.2),

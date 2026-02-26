@@ -34,12 +34,18 @@ interface RuntimeOverrides {
   paperSpreadBps?: number;
 }
 
+/**
+ * Stores order idempotency state close to DB path so reruns can reuse it.
+ */
 function deriveExecutionStorePath(sqlitePath: string): string {
   const parsed = path.parse(sqlitePath);
   const stem = path.join(parsed.dir, parsed.name || "trading");
   return `${stem}.execution-store.json`;
 }
 
+/**
+ * Parses and enforces the restricted symbol universe for this bot.
+ */
 function parseSymbols(raw: string): SupportedSymbol[] {
   const parsed = raw
     .split(",")
@@ -60,6 +66,9 @@ function parseSymbols(raw: string): SupportedSymbol[] {
   return unique as SupportedSymbol[];
 }
 
+/**
+ * Parses fast/slow timeframe pair from env/CLI configuration.
+ */
 function parseTimeframes(raw: string): [string, string] {
   const arr = raw
     .split(",")
@@ -69,6 +78,9 @@ function parseTimeframes(raw: string): [string, string] {
   return [arr[0] ?? "15m", arr[1] ?? "1h"];
 }
 
+/**
+ * Converts textual timeframe (15m, 1h, etc.) into milliseconds.
+ */
 function timeframeToMs(timeframe: string): number {
   const match = timeframe.trim().toLowerCase().match(/^(\d+)([mhdw])$/);
   if (!match) return 15 * 60_000;
@@ -88,6 +100,9 @@ function timeframeToMs(timeframe: string): number {
   }
 }
 
+/**
+ * Builds signal engine using base config and optional runtime profile overrides.
+ */
 function buildSignalEngine(overrides?: RuntimeOverrides): SignalEngine {
   return new SignalEngine({
     emaFast: config.SIGNAL_EMA_FAST,
@@ -110,6 +125,9 @@ function buildSignalEngine(overrides?: RuntimeOverrides): SignalEngine {
   });
 }
 
+/**
+ * Builds allocator using optional profile-specific score threshold.
+ */
 function buildAllocator(overrides?: RuntimeOverrides): PortfolioAllocator {
   return new PortfolioAllocator({
     maxExposureTotal: config.ALLOCATOR_MAX_EXPOSURE_TOTAL,
@@ -119,6 +137,9 @@ function buildAllocator(overrides?: RuntimeOverrides): PortfolioAllocator {
   });
 }
 
+/**
+ * Builds inventory manager with execution defaults.
+ */
 function buildInventory(): InventoryManager {
   return new InventoryManager({
     feeBps: config.DEFAULT_FEE_BPS,
@@ -127,6 +148,9 @@ function buildInventory(): InventoryManager {
   });
 }
 
+/**
+ * Builds risk engine with optional profile-specific daily trade cap.
+ */
 function buildRiskEngine(overrides?: RuntimeOverrides): RiskEngine {
   return new RiskEngine({
     liveTrading: config.LIVE_TRADING,
@@ -145,6 +169,9 @@ function buildRiskEngine(overrides?: RuntimeOverrides): RiskEngine {
   });
 }
 
+/**
+ * Assembles the full bot stack for selected mode (mock, real-adapter, paper-sim-real-data).
+ */
 function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; overrides?: RuntimeOverrides }): BinanceSpotBot {
   const symbols = parseSymbols(config.SYMBOLS);
   const timeframes = parseTimeframes(config.TIMEFRAMES);
@@ -207,6 +234,9 @@ function buildBot(params: { realAdapter: boolean; paperSimRealData: boolean; ove
   );
 }
 
+/**
+ * Runs cycle loop with either fixed interval or candle-close aligned pacing.
+ */
 async function runLoop(bot: BinanceSpotBot, cycles: number, intervalMs: number): Promise<void> {
   const [fastTimeframe] = parseTimeframes(config.TIMEFRAMES);
   const fastTimeframeMs = timeframeToMs(fastTimeframe);
@@ -229,6 +259,9 @@ async function runLoop(bot: BinanceSpotBot, cycles: number, intervalMs: number):
   }
 }
 
+/**
+ * Resolves runtime profile alias/name to concrete override values.
+ */
 function resolveProfile(raw: string): RuntimeOverrides {
   const profile = raw.trim().toLowerCase();
   if (profile === "production-conservative") return { profileName: "production-conservative" };
@@ -260,6 +293,9 @@ function resolveProfile(raw: string): RuntimeOverrides {
   throw new Error(`Unsupported profile "${raw}". Use paper-validation or production-conservative.`);
 }
 
+/**
+ * Logs the effective runtime configuration to simplify audits and incident triage.
+ */
 function logEffectiveRuntimeConfig(
   mode: "paper" | "live",
   overrides?: RuntimeOverrides,

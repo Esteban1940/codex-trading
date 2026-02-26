@@ -4,6 +4,7 @@ import { withRetry } from "../../infra/retry.js";
 import { config } from "../../infra/config.js";
 import { logger } from "../../infra/logger.js";
 import { BinanceWsQuoteFeed } from "./binanceWsQuoteFeed.js";
+import { BinanceWsUserStream } from "./binanceWsUserStream.js";
 import {
   createBinanceClient,
   validateBinanceKeySecurity,
@@ -150,6 +151,7 @@ export class BinanceAdapter implements ExchangeAdapter {
   private activeTestnet = config.BINANCE_TESTNET;
   private networkFallbackAttempted = false;
   private quoteFeed?: BinanceWsQuoteFeed;
+  private userStream?: BinanceWsUserStream;
 
   private assertOrderPlacementAllowed(): void {
     if (!this.activeTestnet && !config.LIVE_TRADING) {
@@ -164,6 +166,8 @@ export class BinanceAdapter implements ExchangeAdapter {
   private switchNetwork(testnet: boolean): void {
     this.quoteFeed?.stop();
     this.quoteFeed = undefined;
+    this.userStream?.stop();
+    this.userStream = undefined;
     this.exchange = createBinanceClient(testnet);
     this.activeTestnet = testnet;
     this.initialized = false;
@@ -178,6 +182,31 @@ export class BinanceAdapter implements ExchangeAdapter {
       reconnectMs: config.BINANCE_WS_RECONNECT_MS
     });
     this.quoteFeed.start();
+  }
+
+  private startUserStreamIfEnabled(): void {
+    if (!config.BINANCE_USE_WS_USER_STREAM) return;
+    if (this.userStream) return;
+    if (!config.BINANCE_API_KEY.trim()) return;
+
+    const restBaseUrl = this.resolveRestBaseUrl();
+    this.userStream = new BinanceWsUserStream({
+      apiKey: config.BINANCE_API_KEY,
+      restBaseUrl,
+      wsBaseUrl: this.activeTestnet ? config.BINANCE_WS_TESTNET_URL : config.BINANCE_WS_MAINNET_URL,
+      reconnectMs: config.BINANCE_WS_RECONNECT_MS,
+      keepaliveMs: config.BINANCE_WS_USER_KEEPALIVE_MS
+    });
+    void this.userStream.start();
+  }
+
+  private resolveRestBaseUrl(): string {
+    if (this.activeTestnet) {
+      const override = config.BINANCE_TESTNET_BASE_URL.trim().replace(/\/+$/, "");
+      if (override) return override;
+      return "https://testnet.binance.vision";
+    }
+    return "https://api.binance.com";
   }
 
   private shouldAttemptNetworkFallback(error: unknown): boolean {
@@ -227,6 +256,7 @@ export class BinanceAdapter implements ExchangeAdapter {
     }
 
     this.startQuoteFeedIfEnabled();
+    this.startUserStreamIfEnabled();
     this.initialized = true;
   }
 

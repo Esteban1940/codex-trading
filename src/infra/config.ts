@@ -130,6 +130,8 @@ const envSchema = z.object({
   BINANCE_WS_TESTNET_URL: z.string().default("wss://stream.testnet.binance.vision/stream"),
   BINANCE_WS_RECONNECT_MS: z.coerce.number().default(2000),
   BINANCE_WS_QUOTE_STALE_MS: z.coerce.number().default(8000),
+  BINANCE_USE_WS_USER_STREAM: z.string().default("false").transform((v) => v === "true"),
+  BINANCE_WS_USER_KEEPALIVE_MS: z.coerce.number().default(25 * 60 * 1000),
   ALERT_WEBHOOK_URL: z.string().default(""),
   ALERT_WEBHOOK_TIMEOUT_MS: z.coerce.number().default(3000),
   TELEGRAM_BOT_TOKEN: z.string().default(""),

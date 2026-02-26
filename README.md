@@ -31,6 +31,7 @@ Required env values:
 - Optional production secret files: `BINANCE_API_KEY_FILE`, `BINANCE_API_SECRET_FILE` (preferred in Docker/runtime secret mounts)
 - `BINANCE_TESTNET=false` by default for mainnet read-only smoke tests (`READ_ONLY_MODE=true`)
 - Binance quote feed uses WebSocket by default (`BINANCE_USE_WS_QUOTES=true`) with REST fallback
+- Optional Binance User Data Stream for account/order events: `BINANCE_USE_WS_USER_STREAM=true`
 - `PAPER_INITIAL_USDT` to mirror your paper account size (example `94`)
 - `MIN_NOTIONAL_USDT` to enforce min order notional (default `10`)
 - Ensure `ALLOCATOR_MAX_EXPOSURE_PER_SYMBOL * equity >= MIN_NOTIONAL_USDT` (for ~94 USDT, use at least `0.11` per symbol)

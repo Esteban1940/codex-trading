@@ -18,6 +18,7 @@ function makeReport(insufficientScoreBtc: number): BotReport {
     noTradeReasonCounts: {
       "BTC/USDT": {
         regime_neutral: 0,
+        insufficient_history: 0,
         insufficient_score: insufficientScoreBtc,
         insufficient_edge: 0,
         allocator_threshold: 0,
@@ -27,6 +28,7 @@ function makeReport(insufficientScoreBtc: number): BotReport {
       },
       "ETH/USDT": {
         regime_neutral: 0,
+        insufficient_history: 0,
         insufficient_score: 0,
         insufficient_edge: 0,
         allocator_threshold: 0,

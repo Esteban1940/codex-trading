@@ -451,7 +451,10 @@ export class BinanceSpotBot {
       peakEquityUsdt: this.state.peakEquityUsdt,
       tradesToday: this.state.tradesToday,
       atrPct: Math.max(signals["BTC/USDT"].features.atrPct, signals["ETH/USDT"].features.atrPct),
-      marketShockPct: this.computeFastMarketShockPct([histories[0] ?? [], histories[2] ?? []]),
+      marketShockPct: this.computeFastMarketShockPct([
+        histories["BTC/USDT"].fast,
+        histories["ETH/USDT"].fast
+      ]),
       spreadPct: this.computeSpreadPct(quotesBefore)
     });
     let allowEntries = risk.allowTrading;
